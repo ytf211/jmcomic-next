@@ -81,9 +81,53 @@ Github提交issue的各位：[yinshu2002](https://github.com/yinshu2002)、[lyst
   - `compileSdk 36`
   - `targetSdk 35`
   - `minSdk 23`
-- Gradle Wrapper 已包含在仓库中，建议直接使用项目内的 `gradlew`。
+- Gradle Wrapper 已包含在仓库中；本仓库也提供 `mise.toml` 管理 Java 21 和 Gradle 9.6.1，推荐使用 mise 执行构建任务。
 
 项目当前使用阿里云 Maven 镜像源，配置位于 `settings.gradle.kts`。如果你处在其他网络环境，也可以把仓库源改回 `google()`、`mavenCentral()` 和 `gradlePluginPortal()`。
+
+## 使用 mise 构建
+
+项目根目录的 `mise.toml` 会管理 Java 21 和 Gradle 9.6.1，并提供一致的 Android 构建任务。首次使用时执行：
+
+```bash
+mise trust
+mise install
+```
+
+常用命令：
+
+```bash
+# 构建 Debug APK
+mise run android-debug
+
+# 构建 Release APK
+mise run android-release
+
+# 运行 JVM 单元测试
+mise run android-test
+
+# 运行 Android lint
+mise run android-lint
+```
+
+Debug APK 位于 `app/build/outputs/apk/debug/`，Release APK 位于 `app/build/outputs/apk/release/`。Release 构建使用 `app/build.gradle.kts` 中配置的签名方式；发布前应替换为正式签名配置。
+
+也可以直接调用脚本，参数与 mise 任务一一对应：
+
+```bash
+./scripts/build-android.sh debug
+./scripts/build-android.sh release
+./scripts/build-android.sh test
+./scripts/build-android.sh lint
+```
+
+脚本默认直连 Maven 仓库。如果 shell 或 Gradle 用户配置已提供可用代理，使用 `JM_USE_GRADLE_PROXY=1` 保留该代理：
+
+```bash
+JM_USE_GRADLE_PROXY=1 mise run android-debug
+```
+
+Gradle daemon、配置缓存、构建缓存和 Kotlin 增量编译已在 `gradle.properties` 中启用。首次构建或依赖变更后需要完整配置；后续相同任务会复用配置缓存以缩短构建时间。
 
 ## 快速开始
 
@@ -94,30 +138,18 @@ git clone https://github.com/HongShi2333/jmcomic-next.git
 cd jmcomic-next
 ```
 
-使用 Android Studio 打开项目根目录，等待 Gradle 同步完成后运行 `app` 模块。
-
-命令行检查 Kotlin 编译：
+使用 Android Studio 打开项目根目录，等待 Gradle 同步完成后运行 `app` 模块。命令行构建建议优先使用 mise；没有 mise 时可使用 Gradle Wrapper：
 
 ```bash
-./gradlew :app:compileDebugKotlin --console=plain
+./gradlew :app:assembleDebug --console=plain
+./gradlew :app:assembleRelease --console=plain
 ```
 
 Windows 环境：
 
 ```bat
-gradlew.bat :app:compileDebugKotlin --console=plain
-```
-
-构建 Debug APK：
-
-```bash
-./gradlew :app:assembleDebug --console=plain
-```
-
-构建 Release APK：
-
-```bash
-./gradlew :app:assembleRelease --console=plain
+gradlew.bat :app:assembleDebug --console=plain
+gradlew.bat :app:assembleRelease --console=plain
 ```
 
 首次打开项目时，Android Studio 会自动生成 `local.properties`。该文件包含本机 Android SDK 路径，不应提交到仓库。
