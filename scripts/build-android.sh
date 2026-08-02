@@ -48,4 +48,19 @@ if [[ -n "$aapt2_path" && -x "$aapt2_path" ]]; then
     gradle_args+=("-Pandroid.aapt2FromMavenOverride=$aapt2_path")
 fi
 
+cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc)"
+worker_count="${GRADLE_MAX_WORKERS:-$cpu_count}"
+if [[ ! "$worker_count" =~ ^[1-9][0-9]*$ ]]; then
+    printf 'GRADLE_MAX_WORKERS must be a positive integer.\n' >&2
+    exit 64
+fi
+worker_count=$((worker_count > cpu_count ? cpu_count : worker_count))
+available_memory_kb="$(awk '/MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || true)"
+if [[ -z "${GRADLE_MAX_WORKERS:-}" && "$available_memory_kb" =~ ^[0-9]+$ ]] &&
+    (( available_memory_kb < 4194304 && worker_count > 4 )); then
+    worker_count=4
+fi
+gradle_args+=("--max-workers=$worker_count")
+printf 'Using Gradle max workers: %s\n' "$worker_count"
+
 exec gradle "${gradle_args[@]}" "$task" --console=plain
