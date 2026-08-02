@@ -22,8 +22,14 @@ import com.par9uet.jm.retrofit.model.NetWorkResult
 import com.par9uet.jm.store.LocalSettingManager
 import com.par9uet.jm.store.ReadHistoryManager
 import com.par9uet.jm.store.ToastManager
+import com.par9uet.jm.ui.models.ChapterAppendState
+import com.par9uet.jm.ui.models.ChapterPageRange
 import com.par9uet.jm.ui.models.CommonUIState
+import com.par9uet.jm.ui.models.ContinuousReaderState
+import com.par9uet.jm.ui.models.ReaderPosition
 import com.par9uet.jm.utils.log
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -58,6 +64,14 @@ class ComicReadViewModel(
     val comicDetailState = _comicDetailState.asStateFlow()
     private val _localChapterList = MutableStateFlow<List<ComicChapter>>(emptyList())
     val localChapterList = _localChapterList.asStateFlow()
+    private val _continuousReaderState = MutableStateFlow(ContinuousReaderState())
+    val continuousReaderState = _continuousReaderState.asStateFlow()
+
+    val currentReaderPosition: ReaderPosition?
+        get() = _continuousReaderState.value.positionAt(currentIndexState.intValue)
+
+    private var appendJob: Job? = null
+    private var readerGeneration = 0
 
     val size: Int get() = _comicPicState.value.data?.size ?: 0
 
@@ -74,6 +88,25 @@ class ComicReadViewModel(
             decodeSemaphorePermits = target
         }
         return decodeSemaphore
+    }
+
+    private fun resetContinuousReader() {
+        appendJob?.cancel()
+        appendJob = null
+        readerGeneration++
+        _continuousReaderState.value = ContinuousReaderState()
+        prefetchSet.clear()
+    }
+
+    private fun setInitialChapterRange(chapterId: Int, chapterName: String, pageCount: Int) {
+        _continuousReaderState.value = ContinuousReaderState().append(
+            ChapterPageRange(
+                chapterId = chapterId,
+                chapterName = chapterName,
+                startIndex = 0,
+                pageCount = pageCount,
+            )
+        )
     }
 
     fun getComicDetail(comicId: Int, onComplete: (() -> Unit)? = null) {
@@ -150,6 +183,7 @@ class ComicReadViewModel(
 
     fun getComicPicList(comicId: Int, shunt: String, onSuccess: (() -> Unit)? = null) {
         viewModelScope.launch {
+            resetContinuousReader()
             _localChapterList.value = emptyList()
             _comicPicState.update {
                 it.copy(
@@ -187,6 +221,12 @@ class ComicReadViewModel(
                             }
                         )
                     }
+                    setInitialChapterRange(
+                        chapterId = comicId,
+                        chapterName = comicDetailState.value.data?.comicChapterList
+                            ?.firstOrNull { it.id == comicId }?.name.orEmpty(),
+                        pageCount = data.data.list.size,
+                    )
                     onSuccess?.invoke()
                 }
             }
@@ -200,6 +240,7 @@ class ComicReadViewModel(
 
     fun getLocalComicPicList(comicId: Int, context: Context, onSuccess: (() -> Unit)? = null) {
         viewModelScope.launch {
+            resetContinuousReader()
             _comicPicState.update {
                 it.copy(
                     isLoading = true,
@@ -243,6 +284,11 @@ class ComicReadViewModel(
                     isLoading = false
                 )
             }
+            setInitialChapterRange(
+                chapterId = comicId,
+                chapterName = downloadComic?.chapterName.orEmpty(),
+                pageCount = files.size,
+            )
             onSuccess?.invoke()
         }
     }
@@ -301,6 +347,123 @@ class ComicReadViewModel(
         return dir
     }
 
+    fun onVisiblePage(
+        globalIndex: Int,
+        context: Context,
+        localOnly: Boolean,
+        shunt: String,
+        chapters: List<ComicChapter>,
+        enabled: Boolean,
+    ) {
+        if (!enabled) return
+        val state = _continuousReaderState.value
+        if (state.appendState !is ChapterAppendState.Idle) return
+        if (!state.shouldPrefetch(globalIndex, trailingPages = 3)) return
+        val currentChapterId = state.positionAt(globalIndex)?.chapterId ?: return
+        val chapterIndex = chapters.indexOfFirst { it.id == currentChapterId }
+        val nextChapter = chapters.getOrNull(chapterIndex + 1)
+        if (nextChapter == null) {
+            _continuousReaderState.value = state.copy(appendState = ChapterAppendState.End)
+            return
+        }
+        if (state.chapters.any { it.chapterId == nextChapter.id }) return
+
+        val generation = readerGeneration
+        _continuousReaderState.value = state.copy(
+            appendState = ChapterAppendState.Loading(nextChapter.id)
+        )
+        appendJob = viewModelScope.launch {
+            try {
+                val pages = if (localOnly) {
+                    buildLocalPageStates(nextChapter.id, context)
+                } else {
+                    buildOnlinePageStates(nextChapter.id, shunt)
+                }
+                if (generation != readerGeneration) return@launch
+                if (pages.isEmpty()) {
+                    throw IllegalStateException("下一章没有可阅读图片")
+                }
+                _comicPicState.update { current ->
+                    current.copy(data = current.data.orEmpty() + pages)
+                }
+                _continuousReaderState.value = _continuousReaderState.value.append(
+                    ChapterPageRange(
+                        chapterId = nextChapter.id,
+                        chapterName = nextChapter.name,
+                        startIndex = 0,
+                        pageCount = pages.size,
+                    )
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                if (generation == readerGeneration) {
+                    _continuousReaderState.value = _continuousReaderState.value.copy(
+                        appendState = ChapterAppendState.Error(
+                            chapterId = nextChapter.id,
+                            message = e.message ?: "下一章加载失败"
+                        )
+                    )
+                }
+            } finally {
+                appendJob = null
+            }
+        }
+    }
+
+    fun retryNextChapter(
+        context: Context,
+        localOnly: Boolean,
+        shunt: String,
+        chapters: List<ComicChapter>,
+    ) {
+        if (_continuousReaderState.value.appendState !is ChapterAppendState.Error) return
+        val retryIndex = _continuousReaderState.value.chapters.lastOrNull()?.endIndex ?: return
+        _continuousReaderState.value = _continuousReaderState.value.copy(
+            appendState = ChapterAppendState.Idle
+        )
+        onVisiblePage(retryIndex, context, localOnly, shunt, chapters, enabled = true)
+    }
+
+    private suspend fun buildOnlinePageStates(
+        comicId: Int,
+        shunt: String,
+    ): List<ComicPicImageState> {
+        return when (val data = comicRepository.getComicPicList(comicId, shunt)) {
+            is NetWorkResult.Error -> throw IllegalStateException(data.message)
+            is NetWorkResult.Success<ComicPicListResponse> -> data.data.list.mapIndexed { index, item ->
+                ComicPicImageState(
+                    index = index,
+                    comicId = comicId,
+                    originSrc = item,
+                    __scrambleId = data.data.__scrambleId,
+                    __speed = data.data.__speed,
+                    picImageLoader = picImageLoader,
+                    imageFetcher = { comicRepository.downloadImageBytes(comicId, index) }
+                )
+            }
+        }
+    }
+
+    private suspend fun buildLocalPageStates(
+        comicId: Int,
+        context: Context,
+    ): List<ComicPicImageState> {
+        val downloadComic = downloadComicDao.getById(comicId)
+        val files = ensureLocalImageDir(context, comicId, downloadComic)
+            ?.let(::listComicImageFiles)
+            .orEmpty()
+        return files.mapIndexed { index, file ->
+            ComicPicImageState(
+                index = index,
+                comicId = comicId,
+                originSrc = file.absolutePath,
+                __scrambleId = Int.MAX_VALUE,
+                __speed = "1",
+                picImageLoader = picImageLoader
+            )
+        }
+    }
     fun decodeIndex(index: Int, context: Context) {
         if (size <= 0 || index !in 0 until size) return
         log("decode index $index")

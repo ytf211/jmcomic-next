@@ -3,14 +3,19 @@ package com.par9uet.jm.ui.screens.readScreen
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.waitForUpOrCancellation
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.pager.PagerState
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -20,11 +25,13 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.PointerEventPass
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
+import com.par9uet.jm.data.models.ComicChapter
 import com.par9uet.jm.data.models.ImageResultState
 import com.par9uet.jm.store.LocalSettingManager
 import com.par9uet.jm.ui.components.ComicPicImage
@@ -48,13 +55,17 @@ fun ComicScrollRead(
     zoomState: ReaderZoomState,
     comicReadViewModel: ComicReadViewModel = koinViewModel(),
     localSettingManager: LocalSettingManager = getKoin().get(),
-    onUpdateSliderValue: (value: Float) -> Unit
+    onUpdateSliderValue: (value: Float) -> Unit,
+    localOnly: Boolean,
+    chapters: List<ComicChapter>,
+    continuousEnabled: Boolean,
 ) {
     val coroutineScope = rememberCoroutineScope()
     var currentIndexState by comicReadViewModel.currentIndexState
     val comicPicState by comicReadViewModel.comicPicState.collectAsState()
     val localSetting by localSettingManager.localSettingState.collectAsState()
     val list = comicPicState.data ?: listOf()
+    val continuousReaderState by comicReadViewModel.continuousReaderState.collectAsState()
     val context = LocalContext.current
     var programmaticScroll by remember { mutableStateOf(false) }
 
@@ -69,7 +80,7 @@ fun ComicScrollRead(
         }
     }
 
-    LaunchedEffect(targetIndex, list.size) {
+    LaunchedEffect(targetIndex) {
         if (list.isEmpty()) return@LaunchedEffect
         val target = targetIndex.coerceIn(0, list.lastIndex)
         if (lazyListState.firstVisibleItemIndex != target) {
@@ -80,7 +91,7 @@ fun ComicScrollRead(
         }
     }
 
-    LaunchedEffect(lazyListState) {
+    LaunchedEffect(lazyListState, list.size, continuousEnabled, chapters, localSetting.shunt) {
         launch {
             snapshotFlow { lazyListState.isScrollInProgress }
                 .filter { it }
@@ -91,6 +102,7 @@ fun ComicScrollRead(
         launch {
             snapshotFlow {
                 lazyListState.layoutInfo.visibleItemsInfo
+                    .filter { it.index < list.size }
                     .takeIf { it.isNotEmpty() }
                     ?.let { it.first().index to it.last().index }
             }
@@ -99,18 +111,31 @@ fun ComicScrollRead(
                 .debounce(120)
                 .collect { (first, last) ->
                     comicReadViewModel.decodeVisibleRange(first, last, context)
+                    comicReadViewModel.onVisiblePage(
+                        globalIndex = last,
+                        context = context,
+                        localOnly = localOnly,
+                        shunt = localSetting.shunt,
+                        chapters = chapters,
+                        enabled = continuousEnabled,
+                    )
                 }
         }
         launch {
-            snapshotFlow { lazyListState.firstVisibleItemIndex }
+            snapshotFlow {
+                lazyListState.layoutInfo.visibleItemsInfo
+                    .firstOrNull { it.index < list.size }
+                    ?.index
+            }
+                .filterNotNull()
                 .distinctUntilChanged()
                 .debounce(150)
-                .collect {
+                .collect { visibleIndex ->
                     if (programmaticScroll) return@collect
-                    log("lazyListState.firstVisibleItemIndex currentIndexState = $currentIndexState it = $it")
-                    if (currentIndexState != it) {
-                        currentIndexState = it
-                        onUpdateSliderValue(it.toFloat())
+                    log("lazyListState.firstVisibleItemIndex currentIndexState = $currentIndexState it = $visibleIndex")
+                    if (currentIndexState != visibleIndex) {
+                        currentIndexState = visibleIndex
+                        onUpdateSliderValue(visibleIndex.toFloat())
                         comicReadViewModel.decodeIndex(currentIndexState, context)
                     }
                 }
@@ -198,6 +223,47 @@ fun ComicScrollRead(
                             }
                         )
                 )
+            }
+            when (val appendState = continuousReaderState.appendState) {
+                is com.par9uet.jm.ui.models.ChapterAppendState.Loading -> {
+                    item(key = "continuous-reader-loading") {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator()
+                        }
+                    }
+                }
+
+                is com.par9uet.jm.ui.models.ChapterAppendState.Error -> {
+                    item(key = "continuous-reader-error") {
+                        Column(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(24.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Text(text = appendState.message)
+                            Button(
+                                onClick = {
+                                    comicReadViewModel.retryNextChapter(
+                                        context = context,
+                                        localOnly = localOnly,
+                                        shunt = localSetting.shunt,
+                                        chapters = chapters,
+                                    )
+                                }
+                            ) {
+                                Text(text = "重试")
+                            }
+                        }
+                    }
+                }
+
+                else -> Unit
             }
         }
     }

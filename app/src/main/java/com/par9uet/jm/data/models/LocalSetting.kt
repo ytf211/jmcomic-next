@@ -45,6 +45,8 @@ data class LocalSetting(
     val prefetchCount: Int = 3,
     // scroll || page || tap
     val readMode: String = "scroll",
+    // 滚动模式下接近章节结尾时自动预加载并衔接下一章
+    val continuousScrollEnabled: Boolean = true,
     // default || side
     val readTapMode: String = "default",
     val launcherDisguise: String = "default",

@@ -88,6 +88,11 @@ class LocalSettingStorage(
                     } else {
                         true
                     },
+                    continuousScrollEnabled = if (savedJson.hasField("continuousScrollEnabled")) {
+                        saved.continuousScrollEnabled
+                    } else {
+                        true
+                    },
                     launcherDisguise = if (savedJson.hasField("launcherDisguise")) {
                         LauncherDisguise.fromId(saved.launcherDisguise).id
                     } else {

@@ -52,6 +52,9 @@ class LocalSettingManager(
 
     fun updateReadMode(readMode: String) = updateSetting { it.copy(readMode = readMode) }
 
+    fun updateContinuousScrollEnabled(enabled: Boolean) =
+        updateSetting { it.copy(continuousScrollEnabled = enabled) }
+
     fun closeShowComicScrollReadTip() =
         updateSetting { it.copy(showComicScrollReadTip = false) }
 

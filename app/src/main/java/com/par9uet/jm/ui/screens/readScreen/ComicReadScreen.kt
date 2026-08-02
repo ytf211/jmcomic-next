@@ -94,6 +94,7 @@ fun ComicReadScreen(
     val localSetting by localSettingManager.localSettingState.collectAsState()
     val isLogin by userManager.isLoginState.collectAsState(false)
     val comicPicState by comicReadViewModel.comicPicState.collectAsState()
+    val continuousReaderState by comicReadViewModel.continuousReaderState.collectAsState()
     val comicDetailState by comicReadViewModel.comicDetailState.collectAsState()
     val localChapterList by comicReadViewModel.localChapterList.collectAsState()
     val readHistory by readHistoryManager.readHistoryState.collectAsState()
@@ -115,13 +116,29 @@ fun ComicReadScreen(
             emptySet()
         }
     }
+    val readerPosition = continuousReaderState.positionAt(currentIndexState)
+    val activeChapterId = if (localSetting.readMode == "scroll") {
+        readerPosition?.chapterId ?: comicId
+    } else {
+        comicId
+    }
+    val toolbarCurrentIndex = if (localSetting.readMode == "scroll") {
+        readerPosition?.localPageIndex ?: currentIndexState
+    } else {
+        currentIndexState
+    }
+    val toolbarPageCount = if (localSetting.readMode == "scroll") {
+        readerPosition?.pageCount ?: size
+    } else {
+        size
+    }
     val readableChapters = if (localOnly) {
         localChapterList
     } else {
         comic?.comicChapterList.orEmpty()
     }
-    val chapterIndex = remember(readableChapters, comicId) {
-        readableChapters.indexOfFirst { it.id == comicId }
+    val chapterIndex = remember(readableChapters, activeChapterId) {
+        readableChapters.indexOfFirst { it.id == activeChapterId }
     }
     val previousChapter = remember(readableChapters, chapterIndex) {
         readableChapters.getOrNull(chapterIndex - 1)
@@ -164,6 +181,20 @@ fun ComicReadScreen(
         comicReadViewModel.showToolBar()
     }
 
+    fun navigateOrScrollToChapter(chapter: ComicChapter?) {
+        if (chapter == null) return
+        val loadedIndex = if (localSetting.readMode == "scroll") {
+            continuousReaderState.globalIndexOf(chapter.id, 0)
+        } else {
+            null
+        }
+        if (loadedIndex != null) {
+            jumpToIndex(loadedIndex)
+        } else {
+            navigateToChapter(chapter)
+        }
+    }
+
     LaunchedEffect(comicId) {
         val onPicListLoaded = {
             if (loadedComicId != comicId) {
@@ -197,27 +228,36 @@ fun ComicReadScreen(
     }
 
     // 退出阅读时保存当前页数进度
-    DisposableEffect(comicId, size) {
+    DisposableEffect(comicId) {
         onDispose {
-            if (size > 0 && readHistoryComicId > 0) {
+            val position = comicReadViewModel.currentReaderPosition
+            val historyKey = comicReadViewModel.readHistoryComicId.intValue
+            if (position != null && historyKey > 0) {
                 readHistoryManager.saveReadProgress(
-                    readHistoryComicId,
-                    comicId,
-                    currentIndexState,
-                    size
+                    historyKey,
+                    position.chapterId,
+                    position.localPageIndex,
+                    position.pageCount
                 )
             }
         }
     }
 
-    // 数据加载完成后，滚动到恢复的页码
-    LaunchedEffect(size, loadedComicId) {
+    // 仅在首章恢复或显式跳页时滚动，追加章节不能触发回跳
+    LaunchedEffect(loadedComicId, targetIndex) {
         if (size > 0 && loadedComicId == comicId && targetIndex in 0 until size) {
             if (localSetting.readMode == "scroll") {
                 lazyListState.scrollToItem(targetIndex)
             } else {
                 pagerState.scrollToPage(targetIndex)
             }
+        }
+    }
+
+    LaunchedEffect(readHistoryComicId, readerPosition?.chapterId) {
+        val position = readerPosition ?: return@LaunchedEffect
+        if (readHistoryComicId > 0) {
+            readHistoryManager.markRead(readHistoryComicId, position.chapterId)
         }
     }
 
@@ -262,7 +302,10 @@ fun ComicReadScreen(
                     pagerState = pagerState,
                     targetIndex = targetIndex,
                     zoomState = zoomState,
-                    onUpdateSliderValue = { updateIndexFromReader(it) }
+                    onUpdateSliderValue = { updateIndexFromReader(it) },
+                    localOnly = localOnly,
+                    chapters = readableChapters,
+                    continuousEnabled = localSetting.continuousScrollEnabled
                 )
             } else {
                 ComicPageRead(
@@ -320,7 +363,7 @@ fun ComicReadScreen(
                         if (!isLogin) {
                             mainNavController.navigate("login")
                         } else {
-                            mainNavController.navigate("comment/$comicId")
+                            mainNavController.navigate("comment/$activeChapterId")
                         }
                     },
                     onChapterJump = {
@@ -343,14 +386,23 @@ fun ComicReadScreen(
                 ) + fadeOut()
             ) {
                 ToolsBar(
-                    currentIndex = currentIndexState,
-                    pageCount = size,
+                    currentIndex = toolbarCurrentIndex,
+                    pageCount = toolbarPageCount,
                     previousChapterEnabled = previousChapter != null,
                     nextChapterEnabled = nextChapter != null,
                     showResetZoom = zoomState.isZoomed,
-                    onPreviousChapter = { navigateToChapter(previousChapter) },
-                    onNextChapter = { navigateToChapter(nextChapter) },
-                    onPageSelected = { jumpToIndex(it) },
+                    onPreviousChapter = { navigateOrScrollToChapter(previousChapter) },
+                    onNextChapter = { navigateOrScrollToChapter(nextChapter) },
+                    onPageSelected = { selectedIndex ->
+                        val target = if (localSetting.readMode == "scroll") {
+                            readerPosition?.let {
+                                continuousReaderState.globalIndexOf(it.chapterId, selectedIndex)
+                            } ?: selectedIndex
+                        } else {
+                            selectedIndex
+                        }
+                        jumpToIndex(target)
+                    },
                     onResetZoom = { zoomState.reset() }
                 )
             }
@@ -421,12 +473,12 @@ fun ComicReadScreen(
                 ChapterPickerDialog(
                     title = "跳转章节",
                     chapters = readableChapters,
-                    currentChapterId = comicId,
+                    currentChapterId = activeChapterId,
                     readChapterIds = readChapterIds,
                     onDismiss = { activeDialog = null },
                     onSelect = { chapter ->
                         activeDialog = null
-                        navigateToChapter(chapter)
+                        navigateOrScrollToChapter(chapter)
                     }
                 )
             }

@@ -266,6 +266,12 @@ fun LocalSettingScreen(
                     SettingsRow(Icons.AutoMirrored.Rounded.MenuBook, "\u9605\u8bfb\u6a21\u5f0f", readModeText(localSetting.readMode)) {
                         openSetting(SettingType.ReadMode)
                     }
+                    SettingsSwitchRow(
+                        icon = Icons.AutoMirrored.Rounded.MenuBook,
+                        title = "\u8fde\u7eed\u4e0b\u4e00\u7ae0",
+                        value = localSetting.continuousScrollEnabled,
+                        onCheckedChange = { localSettingManager.updateContinuousScrollEnabled(it) }
+                    )
                     SettingsRow(
                         Icons.Rounded.Tune,
                         "\u70b9\u51fb\u7ffb\u56fe",
