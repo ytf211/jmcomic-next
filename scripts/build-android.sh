@@ -32,4 +32,20 @@ if [[ "${JM_USE_GRADLE_PROXY:-0}" != "1" ]]; then
     )
 fi
 
+# Prefer an ARM64 SDK AAPT2 over the x86 binary that would otherwise run via Box64.
+aapt2_path="${ANDROID_AAPT2_PATH:-}"
+if [[ -z "$aapt2_path" ]]; then
+    sdk_root="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-}}"
+    if [[ -n "$sdk_root" && -d "$sdk_root/build-tools" ]]; then
+        for candidate in "$sdk_root"/build-tools/*/aapt2; do
+            if [[ -x "$candidate" ]] && file -b "$candidate" | grep -q 'ARM aarch64'; then
+                aapt2_path="$candidate"
+            fi
+        done
+    fi
+fi
+if [[ -n "$aapt2_path" && -x "$aapt2_path" ]]; then
+    gradle_args+=("-Pandroid.aapt2FromMavenOverride=$aapt2_path")
+fi
+
 exec gradle "${gradle_args[@]}" "$task" --console=plain
