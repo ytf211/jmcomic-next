@@ -1,0 +1,19 @@
+[tools]
+java = "21"
+gradle = "9.6.1"
+
+[tasks.android-debug]
+description = "Build the debug APK with the local Android toolchain"
+run = "./scripts/build-android.sh debug"
+
+[tasks.android-release]
+description = "Build the release APK with the configured signing setup"
+run = "./scripts/build-android.sh release"
+
+[tasks.android-test]
+description = "Run JVM unit tests"
+run = "./scripts/build-android.sh test"
+
+[tasks.android-lint]
+description = "Run Android lint"
+run = "./scripts/build-android.sh lint"
