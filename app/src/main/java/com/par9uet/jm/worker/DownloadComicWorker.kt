@@ -41,8 +41,9 @@ import java.io.FileOutputStream
 
 private const val DOWNLOAD_PAGE_TIMEOUT_MS = 180_000L
 private const val DOWNLOAD_MAX_ATTEMPTS = 6
-private const val MAX_CONCURRENT_COMIC_DOWNLOADS = 1
-private val downloadConcurrencyGate = Semaphore(MAX_CONCURRENT_COMIC_DOWNLOADS)
+private val downloadConcurrencyGate = Semaphore(
+    Runtime.getRuntime().availableProcessors().coerceIn(1, 2)
+)
 
 class DownloadComicWorker(
     private val appContext: Context,
