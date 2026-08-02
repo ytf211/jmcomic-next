@@ -28,11 +28,12 @@ data class DownloadComicCacheChapter(
 )
 
 fun getComicDownloadRootDir(context: Context, comic: DownloadComic): File {
-    return getComicDownloadRootDir(context, comic.groupName.ifBlank { comic.name })
+    return tryCreateDir(File(getDownloadDir(context), getComicCacheName(comic)))
 }
 
-fun getComicDownloadRootDir(context: Context, comicName: String): File {
-    return tryCreateDir(File(getDownloadDir(context), safeCacheFileName(comicName)))
+fun getComicCacheName(comic: DownloadComic): String {
+    val comicId = comic.groupId.takeIf { it != 0 } ?: comic.id
+    return "comic_$comicId"
 }
 
 fun getComicChapterDownloadDir(context: Context, comic: DownloadComic): File {
@@ -48,7 +49,7 @@ fun getComicConfigFile(context: Context, comic: DownloadComic): File {
 }
 
 fun getChapterCacheName(comic: DownloadComic): String {
-    return safeCacheFileName(comic.chapterName.ifBlank { "单篇" })
+    return "chapter_${comic.id}"
 }
 
 fun listComicImageFiles(dir: File): List<File> {
@@ -76,23 +77,21 @@ fun writeComicCacheConfig(
             imageCount = listComicImageFiles(chapterDir).size,
         )
     }
+    val persistedCoverPath = (listOf(comic) + chapters).firstNotNullOfOrNull { chapter ->
+        chapter.coverPath
+            .takeIf { it.isNotBlank() }
+            ?.let(::File)
+            ?.takeIf { it.isFile }
+            ?.absolutePath
+    }
     val config = DownloadComicCacheConfig(
         id = comic.groupId.takeIf { it != 0 } ?: comic.id,
         title = comic.groupName.ifBlank { comic.name },
         authors = comic.authorList,
         tags = comic.tagList,
         cachePath = rootDir.absolutePath,
-        coverPath = getComicCoverDownloadFile(context, comic).absolutePath,
+        coverPath = persistedCoverPath ?: getComicCoverDownloadFile(context, comic).absolutePath,
         chapters = chapterConfigs,
     )
     getComicConfigFile(context, comic).writeText(gson.toJson(config), Charsets.UTF_8)
-}
-
-fun safeCacheFileName(name: String): String {
-    val cleaned = name
-        .replace(Regex("""[\\/:*?"<>|]"""), "_")
-        .replace(Regex("""\s+"""), " ")
-        .trim()
-        .trimEnd('.')
-    return cleaned.ifBlank { "未命名漫画" }
 }
