@@ -76,7 +76,7 @@ class ComicReadViewModel(
         return decodeSemaphore
     }
 
-    fun getComicDetail(comicId: Int) {
+    fun getComicDetail(comicId: Int, onComplete: (() -> Unit)? = null) {
         viewModelScope.launch {
             _comicDetailState.update {
                 it.copy(
@@ -87,6 +87,7 @@ class ComicReadViewModel(
             }
             when (val data = comicRepository.getComicDetail(comicId)) {
                 is NetWorkResult.Error -> {
+                    readHistoryComicId.intValue = readHistoryManager.markRead(comicId, comicId)
                     _comicDetailState.update {
                         it.copy(
                             isError = true,
@@ -108,6 +109,7 @@ class ComicReadViewModel(
             _comicDetailState.update {
                 it.copy(isLoading = false)
             }
+            onComplete?.invoke()
         }
     }
 

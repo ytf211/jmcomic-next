@@ -32,11 +32,12 @@ class ReadHistoryManager(
         val current = _readHistoryState.value.toMutableMap()
         val old = current[comicKey]
         val readIds = (old?.readChapterIds.orEmpty() + chapterId).distinct()
+        val sameChapterHistory = old?.takeIf { it.lastChapterId == chapterId }
         current[comicKey] = ComicReadHistory(
             lastChapterId = chapterId,
             readChapterIds = readIds,
-            lastPageIndex = old?.lastPageIndex ?: 0,
-            lastChapterPageCount = old?.lastChapterPageCount ?: 0,
+            lastPageIndex = sameChapterHistory?.lastPageIndex ?: 0,
+            lastChapterPageCount = sameChapterHistory?.lastChapterPageCount ?: 0,
         )
         _readHistoryState.update { current }
         readHistoryStorage.set(current)

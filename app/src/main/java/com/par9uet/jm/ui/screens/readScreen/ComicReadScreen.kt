@@ -165,14 +165,16 @@ fun ComicReadScreen(
     }
 
     LaunchedEffect(comicId) {
-        val onSuccess = {
+        val onPicListLoaded = {
             if (loadedComicId != comicId) {
                 // 恢复上次阅读页数
                 val savedIndex = if (readHistoryComicId > 0) {
                     readHistoryManager.lastReadPageIndex(readHistoryComicId, comicId, readHistory)
                 } else 0
-                currentIndexState = savedIndex
-                targetIndex = savedIndex
+                val currentPageCount = comicReadViewModel.size
+                val safeIndex = savedIndex.coerceIn(0, maxOf(0, currentPageCount - 1))
+                currentIndexState = safeIndex
+                targetIndex = safeIndex
                 loadedComicId = comicId
             } else {
                 targetIndex = currentIndexState.coerceAtLeast(0)
@@ -182,14 +184,15 @@ fun ComicReadScreen(
         }
         if (localOnly) {
             comicReadViewModel.clearComicDetail()
-            comicReadViewModel.getLocalComicPicList(comicId, context, onSuccess)
+            comicReadViewModel.getLocalComicPicList(comicId, context, onPicListLoaded)
         } else {
-            comicReadViewModel.getComicDetail(comicId)
-            comicReadViewModel.getComicPicList(
-                comicId,
-                localSettingManager.localSettingState.value.shunt,
-                onSuccess
-            )
+            comicReadViewModel.getComicDetail(comicId) {
+                comicReadViewModel.getComicPicList(
+                    comicId,
+                    localSettingManager.localSettingState.value.shunt,
+                    onPicListLoaded
+                )
+            }
         }
     }
 
