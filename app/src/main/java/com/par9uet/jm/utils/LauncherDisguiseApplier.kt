@@ -10,7 +10,7 @@ class LauncherDisguiseApplier(
 ) {
     fun apply(disguise: LauncherDisguise) {
         val packageManager = context.packageManager
-        val componentClassPrefix = context.applicationContext::class.java.packageName
+        val componentClassPrefix = context.applicationContext::class.java.name.substringBeforeLast('.')
         LauncherDisguise.entries.forEach { item ->
             runCatching {
                 packageManager.setComponentEnabledSetting(
