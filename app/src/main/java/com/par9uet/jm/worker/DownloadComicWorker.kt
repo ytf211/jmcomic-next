@@ -32,6 +32,8 @@ import com.par9uet.jm.utils.cancelProgressNotification
 import com.par9uet.jm.utils.compressWebpCompat
 import com.par9uet.jm.utils.showProgressNotification
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.File
@@ -39,6 +41,8 @@ import java.io.FileOutputStream
 
 private const val DOWNLOAD_PAGE_TIMEOUT_MS = 180_000L
 private const val DOWNLOAD_MAX_ATTEMPTS = 6
+private const val MAX_CONCURRENT_COMIC_DOWNLOADS = 1
+private val downloadConcurrencyGate = Semaphore(MAX_CONCURRENT_COMIC_DOWNLOADS)
 
 class DownloadComicWorker(
     private val appContext: Context,
@@ -50,7 +54,11 @@ class DownloadComicWorker(
     private val downloadToastAggregator: DownloadToastAggregator,
 ) : CoroutineWorker(appContext, params) {
 
-    override suspend fun doWork(): Result {
+    override suspend fun doWork(): Result = downloadConcurrencyGate.withPermit {
+        performDownload()
+    }
+
+    private suspend fun performDownload(): Result {
         val comicId = inputData.getInt("comicId", -1)
         val batchId = inputData.getString("batchId").orEmpty()
         val batchTotal = inputData.getInt("batchTotal", 1)
