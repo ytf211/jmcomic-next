@@ -130,7 +130,7 @@ gradlew.bat :app:compileDebugKotlin --console=plain
 | Gradle rootProject | `jm-mobile-android6` |
 | Android 模块       | `app`                |
 | namespace          | `com.par9uet.jm`     |
-| applicationId      | `jmcomicoi.net`      |
+| applicationId      | `jmcomicoi.net.dev`  |
 | minSdk             | `23`                 |
 | targetSdk          | `35`                 |
 | compileSdk         | `36`                 |

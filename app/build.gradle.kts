@@ -53,7 +53,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "jmcomicoi.net"
+        applicationId = "jmcomicoi.net.dev"
         // Android 6.0 Marshmallow is API 23.
         minSdk = 23
         targetSdk = 35
