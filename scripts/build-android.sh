@@ -2,17 +2,38 @@
 set -euo pipefail
 
 usage() {
-    printf 'Usage: %s {debug|release|test|lint}\n' "$0" >&2
+    printf 'Usage: %s {debug|release|test|lint} [arm64-v8a|armeabi-v7a|x86|x86_64]\n' "$0" >&2
     exit 64
 }
 
-case "${1:-}" in
+build_type="${1:-}"
+target_abi="${2:-}"
+if (( $# > 2 )); then
+    usage
+fi
+
+case "$build_type" in
     debug) task="assembleDebug" ;;
     release) task="assembleRelease" ;;
     test) task="testDebugUnitTest" ;;
     lint) task="lintDebug" ;;
     *) usage ;;
 esac
+
+if [[ -n "$target_abi" ]]; then
+    case "$build_type:$target_abi" in
+        debug:arm64-v8a|debug:armeabi-v7a|debug:x86|debug:x86_64|\
+        release:arm64-v8a|release:armeabi-v7a|release:x86|release:x86_64) ;;
+        debug:*|release:*)
+            printf 'Unsupported ABI: %s\n' "$target_abi" >&2
+            usage
+            ;;
+        *)
+            printf 'ABI selection is supported only for debug and release builds.\n' >&2
+            usage
+            ;;
+    esac
+fi
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
@@ -48,19 +69,22 @@ if [[ -n "$aapt2_path" && -x "$aapt2_path" ]]; then
     gradle_args+=("-Pandroid.aapt2FromMavenOverride=$aapt2_path")
 fi
 
-cpu_count="$(getconf _NPROCESSORS_ONLN 2>/dev/null || nproc)"
-worker_count="${GRADLE_MAX_WORKERS:-$cpu_count}"
+worker_count="${GRADLE_MAX_WORKERS:-8}"
 if [[ ! "$worker_count" =~ ^[1-9][0-9]*$ ]]; then
     printf 'GRADLE_MAX_WORKERS must be a positive integer.\n' >&2
     exit 64
 fi
-worker_count=$((worker_count > cpu_count ? cpu_count : worker_count))
-available_memory_kb="$(awk '/MemAvailable:/ { print $2 }' /proc/meminfo 2>/dev/null || true)"
-if [[ -z "${GRADLE_MAX_WORKERS:-}" && "$available_memory_kb" =~ ^[0-9]+$ ]] &&
-    (( available_memory_kb < 4194304 && worker_count > 4 )); then
-    worker_count=4
-fi
 gradle_args+=("--max-workers=$worker_count")
+if [[ -n "$target_abi" ]]; then
+    gradle_args+=("-PjmTargetAbi=$target_abi")
+fi
 printf 'Using Gradle max workers: %s\n' "$worker_count"
+if [[ "$build_type" == "debug" || "$build_type" == "release" ]]; then
+    if [[ -n "$target_abi" ]]; then
+        printf 'Building Android ABI: %s\n' "$target_abi"
+    else
+        printf 'Building Android ABIs: arm64-v8a, armeabi-v7a, x86, x86_64\n'
+    fi
+fi
 
 exec gradle "${gradle_args[@]}" "$task" --console=plain

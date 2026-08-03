@@ -30,13 +30,25 @@ fun getGitHash() = providers
     .getOrElse("unknown")
 
 
+val supportedAbis = listOf("arm64-v8a", "armeabi-v7a", "x86", "x86_64")
+val targetAbi = providers.gradleProperty("jmTargetAbi").orNull?.also { abi ->
+    require(abi in supportedAbis) {
+        "Unsupported ABI '$abi'. Supported values: ${supportedAbis.joinToString()}"
+    }
+}
+
 androidComponents {
     onVariants { variant ->
         val hash = getGitHash()
-        val fileName = "jm-mobile_v${versionNameProp}_${hash}.apk"
         variant.outputs.forEach { output ->
             if (output is com.android.build.api.variant.impl.VariantOutputImpl) {
-                output.outputFileName.set(fileName)
+                val abi = output.filters
+                    .firstOrNull { it.filterType.name == "ABI" }
+                    ?.identifier
+                    ?: "universal"
+                output.outputFileName.set(
+                    "jm-mobile_v${versionNameProp}_${abi}_${hash}.apk"
+                )
             }
         }
     }
@@ -77,6 +89,14 @@ android {
             )
         }
     }
+    splits {
+        abi {
+            isEnable = true
+            reset()
+            include(*(targetAbi?.let(::listOf) ?: supportedAbis).toTypedArray())
+            isUniversalApk = false
+        }
+    }
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
@@ -88,6 +108,8 @@ android {
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
+            // Desktop WebP binaries are bundled by a JVM dependency but cannot run on Android.
+            excludes += "/native/{mac,win}/**"
         }
     }
 }

@@ -7,7 +7,7 @@ description = "Build the debug APK with the local Android toolchain"
 run = "./scripts/build-android.sh debug"
 
 [tasks.android-release]
-description = "Build the release APK with the configured signing setup"
+description = "Build all release ABI APKs, or pass one ABI after --"
 run = "./scripts/build-android.sh release"
 
 [tasks.android-test]

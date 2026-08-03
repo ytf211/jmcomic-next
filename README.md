@@ -100,8 +100,11 @@ mise install
 # 构建 Debug APK
 mise run android-debug
 
-# 构建 Release APK
+# 构建全部四种 ABI 的 Release APK
 mise run android-release
+
+# 只构建一个 ABI（支持 arm64-v8a、armeabi-v7a、x86、x86_64）
+mise run android-release -- arm64-v8a
 
 # 运行 JVM 单元测试
 mise run android-test
@@ -117,6 +120,7 @@ Debug APK 位于 `app/build/outputs/apk/debug/`，Release APK 位于 `app/build/
 ```bash
 ./scripts/build-android.sh debug
 ./scripts/build-android.sh release
+./scripts/build-android.sh release arm64-v8a
 ./scripts/build-android.sh test
 ./scripts/build-android.sh lint
 ```
@@ -127,11 +131,13 @@ Debug APK 位于 `app/build/outputs/apk/debug/`，Release APK 位于 `app/build/
 JM_USE_GRADLE_PROXY=1 mise run android-debug
 ```
 
-Gradle daemon、配置缓存、构建缓存和 Kotlin 增量编译已在 `gradle.properties` 中启用。脚本会使用最多 8 个 Gradle worker；当可用内存低于 4 GiB 时自动限制为 4 个，避免交换分区导致构建变慢。需要固定并行度时可显式覆盖：
+Gradle daemon、配置缓存、构建缓存和 Kotlin 增量编译已在 `gradle.properties` 中启用。脚本默认使用 8 个 Gradle worker；需要针对低内存机器降低并行度时可显式覆盖：
 
 ```bash
-GRADLE_MAX_WORKERS=8 mise run android-release
+GRADLE_MAX_WORKERS=4 mise run android-release
 ```
+
+Release 和 Debug 构建默认输出 `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64` 四种独立 APK，不额外生成 universal APK；在命令末尾传 ABI 可只注册和构建一个架构输出。
 
 首次构建、依赖变更或新 Git 提交后需要完整配置；后续相同任务会复用配置缓存以缩短构建时间。
 
