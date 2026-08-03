@@ -14,6 +14,7 @@ import com.par9uet.jm.storage.PersonaStorage
 import com.par9uet.jm.storage.ReadHistoryStorage
 import com.par9uet.jm.storage.SecureStorage
 import com.par9uet.jm.storage.UserStorage
+import com.par9uet.jm.store.AppInitializationCoordinator
 import com.par9uet.jm.store.AppUpdateDownloadManager
 import com.par9uet.jm.store.DownloadToastAggregator
 import com.par9uet.jm.store.HistorySearchManager
@@ -22,6 +23,7 @@ import com.par9uet.jm.store.LocalSettingManager
 import com.par9uet.jm.store.ReadHistoryManager
 import com.par9uet.jm.store.RemoteSettingManager
 import com.par9uet.jm.store.ToastManager
+import com.par9uet.jm.store.UserAutoLoginTask
 import com.par9uet.jm.store.UserManager
 import com.par9uet.jm.task.AppInitTask
 import com.par9uet.jm.ui.viewModel.GlobalViewModel
@@ -58,6 +60,7 @@ val appModule = module {
     single { AiChatRepository(get()) }
 
     single { UserManager(get(), get(), get(), get()) } bind AppInitTask::class
+    single { UserAutoLoginTask(get()) } bind AppInitTask::class
     single { RemoteSettingManager(get()) } bind AppInitTask::class
     single { LocalSettingManager(get(), get()) } bind AppInitTask::class
     single { HistorySearchManager(get()) } bind AppInitTask::class
@@ -65,11 +68,12 @@ val appModule = module {
     single { ToastManager() }
     single { DownloadToastAggregator(get()) }
     single { InitManager() }
+    single { AppInitializationCoordinator(getAll(), get(), get()) }
     single { AppUpdateDownloadManager(get(), get(), get()) }
 
     single<Gson> { GsonBuilder().setStrictness(Strictness.LENIENT).serializeNulls().create() }
 
-    viewModel { GlobalViewModel(getAll(), get()) }
+    viewModel { GlobalViewModel(get()) }
     viewModel { AiChatViewModel(get(), get(), get()) }
     viewModel { PersonaViewModel(get()) }
 }

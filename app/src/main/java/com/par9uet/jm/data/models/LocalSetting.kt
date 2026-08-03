@@ -88,6 +88,8 @@ data class LocalSetting(
     val downloadGridColumns: Int = 0,
     val historyGridColumns: Int = 0,
     val searchGridColumns: Int = 0,
+    // 同时运行的下载任务数；高内存图片解扰仍由独立门控串行执行
+    val downloadConcurrency: Int = 2,
     // 阅读图片内存优化：开启后限制并发解码数并降低解码采样率，缓解低端设备 OOM
     val readMemoryOptEnabled: Boolean = false,
     // 阅读并发解码上限：仅在 readMemoryOptEnabled 开启时生效，推荐值 2

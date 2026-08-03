@@ -96,6 +96,12 @@ fun DownloadComicDetailScreen(
     val mainNavController = LocalMainNavController.current
     val detailState by viewModel.detailState.collectAsState()
     val readHistory by readHistoryManager.readHistoryState.collectAsState()
+    val savedReadChapterId = readHistoryManager.lastReadChapterId(
+        detailState.remoteCoverComicId,
+        readHistory,
+    )
+    val hasReadableHistory = savedReadChapterId != null &&
+        detailState.completeItems.any { it.id == savedReadChapterId }
     val remoteSetting by remoteSettingManager.remoteSettingState.collectAsState()
     val scrollState = rememberScrollState()
     var cachedInfo by remember { mutableStateOf<CachedComicInfo?>(null) }
@@ -232,6 +238,7 @@ fun DownloadComicDetailScreen(
                             .navigationBarsPadding()
                             .padding(horizontal = 12.dp, vertical = 10.dp),
                         isMultiChapter = detailState.isMultiChapter,
+                        hasHistory = hasReadableHistory,
                         exporting = exporting,
                         onExport = {
                             selectedExportChapterIds = detailState.completeItems.map { it.id }.toSet()
@@ -241,12 +248,8 @@ fun DownloadComicDetailScreen(
                             activeDialog = DownloadDetailDialog.ReadChapter
                         },
                         onRead = {
-                            val savedChapterId = readHistoryManager.lastReadChapterId(
-                                detailState.remoteCoverComicId,
-                                readHistory
-                            )
                             val chapterId = detailState.completeItems
-                                .firstOrNull { it.id == savedChapterId }
+                                .firstOrNull { it.id == savedReadChapterId }
                                 ?.id
                                 ?: detailState.completeItems.first().id
                             mainNavController.navigate("localComicRead/$chapterId")
@@ -438,10 +441,19 @@ private enum class PdfExportMode {
     SplitByChapter
 }
 
+internal fun localReadActionLabel(isMultiChapter: Boolean, hasHistory: Boolean): String {
+    return when {
+        hasHistory -> "继续"
+        isMultiChapter -> "阅读"
+        else -> "阅读缓存"
+    }
+}
+
 @Composable
 private fun DownloadDetailBottomActions(
     modifier: Modifier,
     isMultiChapter: Boolean,
+    hasHistory: Boolean,
     exporting: Boolean,
     onExport: () -> Unit,
     onSelectChapter: () -> Unit,
@@ -484,7 +496,7 @@ private fun DownloadDetailBottomActions(
             contentPadding = PaddingValues(horizontal = 8.dp),
             onClick = onRead
         ) {
-            Text(if (isMultiChapter) "阅读" else "阅读缓存")
+            Text(localReadActionLabel(isMultiChapter, hasHistory))
         }
     }
 }

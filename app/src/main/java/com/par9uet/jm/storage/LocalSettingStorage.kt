@@ -1,5 +1,6 @@
 package com.par9uet.jm.storage
 
+import com.google.gson.Gson
 import com.google.gson.JsonParser
 import com.google.gson.reflect.TypeToken
 import com.par9uet.jm.data.models.APP_LOCK_TYPE_PASSWORD
@@ -38,11 +39,23 @@ class LocalSettingStorage(
     fun get(): LocalSetting {
         if (_state.value == null) {
             _state.update {
-                val savedJson = secureStorage.getString(STORAGE_KEY)
-                val saved = secureStorage.get<LocalSetting>(
-                    STORAGE_KEY,
-                    object : TypeToken<LocalSetting>() {}.type
-                ) ?: LocalSetting()
+                val savedJson = if (secureStorage.contains(STORAGE_KEY)) {
+                    secureStorage.getStringRequired(STORAGE_KEY)
+                } else {
+                    null
+                }
+                val saved = if (savedJson == null) {
+                    LocalSetting()
+                } else {
+                    runCatching {
+                        Gson().fromJson<LocalSetting>(
+                            savedJson,
+                            object : TypeToken<LocalSetting>() {}.type
+                        )
+                    }.getOrElse { throwable ->
+                        throw IllegalStateException("本地设置损坏，无法确认应用锁状态", throwable)
+                    } ?: throw IllegalStateException("本地设置为空，无法确认应用锁状态")
+                }
                 // 旧版本字段 appLockType 迁移到 appLockUnlockMode
                 val legacyAppLockType = parseLegacyAppLockType(savedJson)
                 val migratedUnlockMode = if (savedJson.hasField("appLockUnlockMode")) {
@@ -116,6 +129,16 @@ class LocalSettingStorage(
                         ""
                     },
                     appLockUnlockMode = migratedUnlockMode,
+                    downloadConcurrency = if (savedJson.hasField("downloadConcurrency")) {
+                        saved.downloadConcurrency.coerceIn(1, 3)
+                    } else {
+                        2
+                    },
+                    readDecodeConcurrency = if (savedJson.hasField("readDecodeConcurrency")) {
+                        saved.readDecodeConcurrency.coerceIn(1, 2)
+                    } else {
+                        2
+                    },
                     colorPalettePreset = if (savedJson.hasField("colorPalettePreset")) {
                         saved.colorPalettePreset
                     } else {

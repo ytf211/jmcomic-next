@@ -14,6 +14,7 @@ class SecureStorage(
     val sharedPreferences: SharedPreferences =
         context.getSharedPreferences("jm-mobile-g-data", Context.MODE_PRIVATE)
 
+    @Synchronized
     fun <T> set(key: String, t: T) {
         val json = gson.toJson(t)
         sharedPreferences.edit {
@@ -21,6 +22,7 @@ class SecureStorage(
         }
     }
 
+    @Synchronized
     fun <T> get(key: String, type: java.lang.reflect.Type): T? {
         return try {
             getString(key)?.let {
@@ -32,6 +34,18 @@ class SecureStorage(
         }
     }
 
+    @Synchronized
+    fun getStringRequired(key: String): String {
+        val encrypted = sharedPreferences.getString(key, null)
+            ?: throw NoSuchElementException("存储数据不存在：$key")
+        return cryptoManager.decrypt(encrypted)
+            ?: throw IllegalStateException("存储数据无法解密：$key")
+    }
+
+    @Synchronized
+    fun contains(key: String): Boolean = sharedPreferences.contains(key)
+
+    @Synchronized
     fun getString(key: String): String? {
         val json = sharedPreferences.getString(key, null)
         return try {
@@ -44,6 +58,7 @@ class SecureStorage(
         }
     }
 
+    @Synchronized
     fun remove(key: String) {
         sharedPreferences.edit {
             remove(key)

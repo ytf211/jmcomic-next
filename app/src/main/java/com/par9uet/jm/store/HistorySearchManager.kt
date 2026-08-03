@@ -41,6 +41,7 @@ class HistorySearchManager(
     private var appTaskInfo = AppTaskInfo(
         taskName = "加载历史搜索数据",
         sort = 4,
+        blocksStartup = true,
     )
 
     override fun getAppTaskInfo(): AppTaskInfo = appTaskInfo

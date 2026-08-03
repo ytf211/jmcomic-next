@@ -47,9 +47,7 @@ import java.io.FileOutputStream
 private const val DOWNLOAD_PAGE_TIMEOUT_MS = 180_000L
 private const val DOWNLOAD_MAX_ATTEMPTS = 6
 private const val MAX_PROGRESS_UPDATES_PER_CHAPTER = 20
-private val downloadConcurrencyGate = Semaphore(
-    Runtime.getRuntime().availableProcessors().coerceIn(1, 2)
-)
+private val downloadImageProcessingGate = Semaphore(1)
 private val cacheWriteMutex = Mutex()
 
 internal fun shouldStreamOriginalPage(
@@ -76,7 +74,8 @@ class DownloadComicWorker(
     override suspend fun doWork(): Result {
         val comicId = inputData.getInt("comicId", -1)
         if (comicId == -1) return Result.failure()
-        return downloadConcurrencyGate.withPermit {
+        val configuredConcurrency = localSettingManager.localSettingState.value.downloadConcurrency
+        return DownloadConcurrencyLimiter.withLimit(configuredConcurrency) {
             DownloadWorkCoordinator.withChapterLock(comicId) {
                 performDownload()
             }
@@ -258,27 +257,31 @@ class DownloadComicWorker(
                         "第 ${index + 1} 页下载失败"
                     }
                 } else {
-                    val imageState = ComicPicImageState(
-                        index = index,
-                        comicId = comicId,
-                        originSrc = url,
-                        __scrambleId = scrambleId,
-                        __speed = speed,
-                        picImageLoader = loader,
-                        imageFetcher = { comicRepository.downloadImageBytes(comicId, index) },
-                        decodedFileOverride = tempFile,
-                        cacheInMemory = false,
-                        cacheOnDisk = false,
-                    )
-                    try {
-                        imageState.decode(appContext)
-                        when (val result = imageState.imageResultState) {
-                            is ImageResultState.Success -> Unit
-                            is ImageResultState.Failure -> error("第 ${index + 1} 页下载失败：${result.reason}")
-                            ImageResultState.Loading -> error("第 ${index + 1} 页仍在加载中")
+                    downloadImageProcessingGate.withPermit {
+                        val imageState = ComicPicImageState(
+                            index = index,
+                            comicId = comicId,
+                            originSrc = url,
+                            __scrambleId = scrambleId,
+                            __speed = speed,
+                            picImageLoader = loader,
+                            imageFetcher = { comicRepository.downloadImageBytes(comicId, index) },
+                            decodedFileOverride = tempFile,
+                            cacheInMemory = false,
+                            cacheOnDisk = false,
+                        )
+                        try {
+                            imageState.decode(appContext)
+                            when (val result = imageState.imageResultState) {
+                                is ImageResultState.Success -> Unit
+                                is ImageResultState.Failure -> error(
+                                    "第 ${index + 1} 页下载失败：${result.reason}"
+                                )
+                                ImageResultState.Loading -> error("第 ${index + 1} 页仍在加载中")
+                            }
+                        } finally {
+                            imageState.clearDecodedImage()
                         }
-                    } finally {
-                        imageState.clearDecodedImage()
                     }
                 }
             }

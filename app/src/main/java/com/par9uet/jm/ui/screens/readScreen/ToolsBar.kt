@@ -42,6 +42,25 @@ import androidx.compose.ui.unit.IntSize
 import androidx.compose.ui.unit.dp
 import kotlin.math.roundToInt
 
+internal data class ReaderToolbarProgress(
+    val currentPage: Int,
+    val pageCount: Int,
+    val progressText: String,
+)
+
+internal fun readerToolbarProgress(currentIndex: Int, pageCount: Int): ReaderToolbarProgress {
+    if (pageCount <= 0) {
+        return ReaderToolbarProgress(currentPage = 0, pageCount = 0, progressText = "0%")
+    }
+    val currentPage = currentIndex.coerceIn(0, pageCount - 1) + 1
+    val progress = currentPage.toFloat() / pageCount
+    return ReaderToolbarProgress(
+        currentPage = currentPage,
+        pageCount = pageCount,
+        progressText = "${(progress * 100).roundToInt()}%",
+    )
+}
+
 @Composable
 fun ToolsBar(
     modifier: Modifier = Modifier,
@@ -56,11 +75,9 @@ fun ToolsBar(
     onPageSelected: (index: Int) -> Unit,
     onResetZoom: () -> Unit = {},
 ) {
-    val lastIndex = (pageCount - 1).coerceAtLeast(0)
+    val displayProgress = readerToolbarProgress(currentIndex, pageCount)
+    val lastIndex = (displayProgress.pageCount - 1).coerceAtLeast(0)
     val safeIndex = currentIndex.coerceIn(0, lastIndex)
-    val currentPage = if (pageCount <= 0) 0 else safeIndex + 1
-    val progress = if (pageCount <= 0) 0f else currentPage.toFloat() / pageCount
-    val progressText = if (pageCount <= 0) "0%" else "${(progress * 100).roundToInt()}%"
 
     Card(
         modifier = modifier
@@ -104,26 +121,17 @@ fun ToolsBar(
                         modifier = Modifier.fillMaxWidth(),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = MaterialTheme.colorScheme.onSurface,
                         textAlign = androidx.compose.ui.text.style.TextAlign.Center
                     )
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        Text(
-                            text = "$currentPage / $pageCount",
-                            style = MaterialTheme.typography.labelLarge,
-                            fontWeight = FontWeight.Medium,
-                            color = MaterialTheme.colorScheme.onSurface
-                        )
-                        Text(
-                            text = progressText,
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
+                    Text(
+                        text = "${displayProgress.currentPage} / ${displayProgress.pageCount}",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.Medium,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
                 }
                 FilledTonalIconButton(
                     enabled = nextChapterEnabled,
@@ -149,17 +157,32 @@ fun ToolsBar(
                     )
                 }
             }
-            PageProgressBar(
-                currentIndex = safeIndex,
-                pageCount = pageCount,
-                onPageSelected = onPageSelected
-            )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                PageProgressBar(
+                    modifier = Modifier.weight(1f),
+                    currentIndex = safeIndex,
+                    pageCount = pageCount,
+                    onPageSelected = onPageSelected
+                )
+                Text(
+                    text = displayProgress.progressText,
+                    modifier = Modifier.widthIn(min = 36.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    textAlign = androidx.compose.ui.text.style.TextAlign.End,
+                )
+            }
         }
     }
 }
 
 @Composable
 private fun PageProgressBar(
+    modifier: Modifier = Modifier,
     currentIndex: Int,
     pageCount: Int,
     onPageSelected: (index: Int) -> Unit
@@ -178,8 +201,7 @@ private fun PageProgressBar(
     }
 
     Box(
-        modifier = Modifier
-            .fillMaxWidth()
+        modifier = modifier
             .height(44.dp)
             .onSizeChanged { size = it }
             .pointerInput(pageCount, size) {

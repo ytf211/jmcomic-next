@@ -10,6 +10,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.graphics.Canvas
 import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.asAndroidBitmap
 import androidx.compose.ui.graphics.asImageBitmap
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.IntSize
@@ -27,8 +28,11 @@ import com.par9uet.jm.utils.logError
 import com.par9uet.jm.utils.md5
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -83,6 +87,7 @@ class ComicPicImageState(
     companion object {
         private val seedMap = listOf(2, 4, 6, 8, 10, 12, 14, 16, 18, 20)
         private val cacheWriteMutex = Mutex()
+        private val imageProcessingGate = Semaphore(2)
     }
 
     private val decodeGeneration = DecodeGeneration()
@@ -94,7 +99,9 @@ class ComicPicImageState(
         updateImageResult(generation, ImageResultState.Loading)
         withContext(Dispatchers.Default) {
             try {
-                decodeImage(context, downscale, generation)
+                imageProcessingGate.withPermit {
+                    decodeImage(context, downscale, generation)
+                }
             } catch (e: CancellationException) {
                 throw e
             } catch (e: OutOfMemoryError) {
@@ -247,7 +254,15 @@ class ComicPicImageState(
 
     fun clearDecodedImage() {
         decodeGeneration.invalidate {
+            val previous = imageResultState
             imageResultState = ImageResultState.Loading
+            if (!cacheInMemory && !cacheOnDisk && previous is ImageResultState.Success) {
+                runCatching {
+                    previous.decodeImageBitmap.asAndroidBitmap()
+                        .takeIf { !it.isRecycled }
+                        ?.recycle()
+                }
+            }
         }
     }
 
@@ -320,16 +335,22 @@ class ComicPicImageState(
 
     private suspend fun saveBitmapAsWebp(bitmap: Bitmap, file: File) {
         cacheWriteMutex.withLock {
+            val tempFile = File(file.parentFile, ".${file.name}.part")
             withContext(Dispatchers.IO) {
                 file.parentFile?.mkdirs()
-                val tempFile = File(file.parentFile, ".${file.name}.part")
                 tempFile.delete()
-                try {
+            }
+            try {
+                withContext(Dispatchers.Default) {
                     FileOutputStream(tempFile).use { out ->
                         check(bitmap.compressWebpCompat(50, out)) { "图片压缩失败" }
                     }
+                }
+                withContext(Dispatchers.IO) {
                     check(tempFile.renameTo(file)) { "无法完成图片缓存写入" }
-                } finally {
+                }
+            } finally {
+                withContext(NonCancellable + Dispatchers.IO) {
                     tempFile.delete()
                 }
             }

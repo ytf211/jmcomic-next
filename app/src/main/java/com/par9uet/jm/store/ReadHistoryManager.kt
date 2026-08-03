@@ -111,6 +111,7 @@ class ReadHistoryManager(
     private val appTaskInfo = AppTaskInfo(
         taskName = "加载阅读历史",
         sort = 5,
+        blocksStartup = true,
     )
 
     override fun getAppTaskInfo(): AppTaskInfo = appTaskInfo

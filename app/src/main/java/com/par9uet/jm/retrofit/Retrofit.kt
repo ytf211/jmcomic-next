@@ -32,7 +32,8 @@ class Retrofit(
 ) : AppInitTask {
     private val appTaskInfo = AppTaskInfo(
         taskName = "Retrofit 配置",
-        sort = 1
+        sort = 1,
+        blocksStartup = true,
     )
     private var cookieList = listOf<Cookie>()
     private val cookieJar = object : CookieJar {

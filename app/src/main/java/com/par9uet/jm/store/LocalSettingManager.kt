@@ -146,17 +146,20 @@ class LocalSettingManager(
     fun updateAppLockEnabled(enabled: Boolean) =
         updateSetting { it.copy(appLockEnabled = enabled) }
 
-    fun updateAppLockPassword(pwd: String) =
+    fun updateAppLockPassword(pwd: String) {
         updateSetting { it.copy(appLockPassword = pwd) }
+    }
 
     fun updateAppLockPasswordLength(len: Int) =
         updateSetting { it.copy(appLockPasswordLength = len.coerceIn(4, 8)) }
 
-    fun updateAppLockPattern(pattern: String) =
+    fun updateAppLockPattern(pattern: String) {
         updateSetting { it.copy(appLockPattern = pattern) }
+    }
 
-    fun updateAppLockUnlockMode(mode: String) =
+    fun updateAppLockUnlockMode(mode: String) {
         updateSetting { it.copy(appLockUnlockMode = mode) }
+    }
 
     fun updateColorPalettePreset(preset: String) =
         updateSetting { it.copy(colorPalettePreset = preset) }
@@ -192,11 +195,14 @@ class LocalSettingManager(
     fun updateHomeExcludedTags(tags: List<String>) =
         updateSetting { it.copy(homeExcludedTags = tags) }
 
+    fun updateDownloadConcurrency(concurrency: Int) =
+        updateSetting { it.copy(downloadConcurrency = concurrency.coerceIn(1, 3)) }
+
     fun updateReadMemoryOptEnabled(enabled: Boolean) =
         updateSetting { it.copy(readMemoryOptEnabled = enabled) }
 
     fun updateReadDecodeConcurrency(concurrency: Int) =
-        updateSetting { it.copy(readDecodeConcurrency = concurrency.coerceIn(1, 4)) }
+        updateSetting { it.copy(readDecodeConcurrency = concurrency.coerceIn(1, 2)) }
 
     /**
      * 应用从备份恢复的 [LocalSetting]。
@@ -209,6 +215,8 @@ class LocalSettingManager(
         val previousLauncherDisguise = _localSettingState.value.launcherDisguise
         updateSetting { current ->
             setting.copy(
+                downloadConcurrency = setting.downloadConcurrency.coerceIn(1, 3),
+                readDecodeConcurrency = setting.readDecodeConcurrency.coerceIn(1, 2),
                 appLockEnabled = current.appLockEnabled,
                 appLockPassword = current.appLockPassword,
                 appLockPasswordLength = current.appLockPasswordLength,
@@ -238,6 +246,7 @@ class LocalSettingManager(
     private var appTaskInfo = AppTaskInfo(
         taskName = "load local app settings",
         sort = 3,
+        blocksStartup = true,
     )
 
     override suspend fun init() {
@@ -245,7 +254,6 @@ class LocalSettingManager(
         _localSettingState.update {
             localSettingStorage.get()
         }
-        launcherDisguiseApplier.apply(LauncherDisguise.fromId(_localSettingState.value.launcherDisguise))
         log("local app settings init finished")
     }
 

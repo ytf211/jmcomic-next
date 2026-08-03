@@ -96,6 +96,7 @@ private sealed class SettingType {
     object NotificationManagement : SettingType()
     object RecommendSource : SettingType()
     object AllGridColumns : SettingType()
+    object DownloadConcurrency : SettingType()
     object ReadDecodeConcurrency : SettingType()
 }
 
@@ -303,6 +304,23 @@ fun LocalSettingScreen(
                 }
             }
             item {
+                SettingsSection(title = "\u4e0b\u8f7d") {
+                    Text(
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                        text = "\u53ef\u540c\u65f6\u4e0b\u8f7d\u591a\u4e2a\u7ae0\u8282\uff1b\u56fe\u7247\u89e3\u6270\u4ecd\u4fdd\u6301\u5355\u4efb\u52a1\u5904\u7406\uff0c\u907f\u514d CPU \u548c\u5185\u5b58\u5cf0\u503c\u53e0\u52a0\u3002",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    SettingsRow(
+                        icon = Icons.Rounded.Download,
+                        title = "\u540c\u65f6\u4e0b\u8f7d\u4efb\u52a1\u6570",
+                        value = "${localSetting.downloadConcurrency}\uff08\u63a8\u8350 2\uff09"
+                    ) {
+                        openSetting(SettingType.DownloadConcurrency)
+                    }
+                }
+            }
+            item {
                 SettingsSection(title = "\u901a\u77e5") {
                     SettingsRow(Icons.Rounded.Notifications, "\u901a\u77e5\u7ba1\u7406", notificationText(localSetting)) {
                         openSetting(SettingType.NotificationManagement)
@@ -451,13 +469,20 @@ private fun SettingSelectDialogContent(
             )
         }
     }
+    val downloadConcurrencyOptionList by remember {
+        derivedStateOf {
+            listOf(
+                SelectOption("1\uff08\u4f4e\u5185\u5b58\uff09", "1"),
+                SelectOption("2\uff08\u63a8\u8350\uff09", "2"),
+                SelectOption("3\uff08\u9ad8\u901f\u7f51\u7edc\uff09", "3")
+            )
+        }
+    }
     val readDecodeConcurrencyOptionList by remember {
         derivedStateOf {
             listOf(
                 SelectOption("1", "1"),
-                SelectOption("2\uff08\u63a8\u8350\uff09", "2"),
-                SelectOption("3", "3"),
-                SelectOption("4", "4")
+                SelectOption("2\uff08\u63a8\u8350\uff09", "2")
             )
         }
     }
@@ -475,6 +500,7 @@ private fun SettingSelectDialogContent(
             is SettingType.ReadTapMode -> readTapModeOptionList
             is SettingType.NotificationManagement -> notificationOptionList
             is SettingType.RecommendSource -> recommendSourceOptionList
+            is SettingType.DownloadConcurrency -> downloadConcurrencyOptionList
             is SettingType.ReadDecodeConcurrency -> readDecodeConcurrencyOptionList
         },
         onSelect = {
@@ -494,6 +520,9 @@ private fun SettingSelectDialogContent(
                     )
                 }
                 is SettingType.RecommendSource -> localSettingManager.updateRecommendSource(it)
+                is SettingType.DownloadConcurrency -> localSettingManager.updateDownloadConcurrency(
+                    it.toIntOrNull() ?: 2
+                )
                 is SettingType.ReadDecodeConcurrency -> localSettingManager.updateReadDecodeConcurrency(it.toIntOrNull() ?: 2)
             }
             onDismiss()
@@ -810,6 +839,7 @@ private fun settingTitle(type: SettingType): String {
         is SettingType.NotificationManagement -> "\u901a\u77e5\u7ba1\u7406"
         is SettingType.RecommendSource -> "\u63a8\u8350\u6e90"
         is SettingType.AllGridColumns -> "\u7f51\u683c\u5217\u6570"
+        is SettingType.DownloadConcurrency -> "\u540c\u65f6\u4e0b\u8f7d\u4efb\u52a1\u6570"
         is SettingType.ReadDecodeConcurrency -> "\u5e76\u53d1\u89e3\u7801\u6570"
     }
 }
@@ -831,6 +861,7 @@ private fun settingValue(type: SettingType, localSetting: LocalSetting): String 
         }
         is SettingType.RecommendSource -> localSetting.recommendSource
         is SettingType.AllGridColumns -> ""
+        is SettingType.DownloadConcurrency -> "${localSetting.downloadConcurrency}"
         is SettingType.ReadDecodeConcurrency -> "${localSetting.readDecodeConcurrency}"
     }
 }

@@ -24,12 +24,15 @@ class UserManager(
 ) : AppInitTask {
     private val _userState = MutableStateFlow(CommonUIState<User>())
     val userState = _userState.asStateFlow()
+    private val _sessionReady = MutableStateFlow(false)
+    val sessionReady = _sessionReady.asStateFlow()
 
     val isLoginState = _userState.map { (it.data?.id ?: 0) > 0 }
 
     private val appTaskInfo = AppTaskInfo(
         taskName = "加载上次退出前保存的用户信息",
         sort = 4,
+        blocksStartup = true,
     )
 
     fun updateUser(user: User) {
@@ -95,14 +98,20 @@ class UserManager(
             )
         }
         log("已加载本地用户、cookie、登录信息")
-        val userData = _userState.value.data
-        if (userData != null && userData.username.isNotEmpty() && userData.password.isNotEmpty()) {
-            val username = userData.username
-            val password = userData.password
-            log("检测到已保存了用户登录信息，开始执行一次用户登录")
-            autoLogin(username, password)
+        log("用户本地信息初始化结束")
+    }
+
+    suspend fun refreshSavedLogin() {
+        _sessionReady.value = false
+        try {
+            val userData = _userState.value.data
+            if (userData != null && userData.username.isNotEmpty() && userData.password.isNotEmpty()) {
+                log("检测到已保存了用户登录信息，开始执行一次用户登录")
+                autoLogin(userData.username, userData.password)
+            }
+        } finally {
+            _sessionReady.value = true
         }
-        log("用户信息初始化结束")
     }
 
     override fun getAppTaskInfo(): AppTaskInfo = appTaskInfo

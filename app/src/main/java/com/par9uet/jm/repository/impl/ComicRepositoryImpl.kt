@@ -66,6 +66,7 @@ import okhttp3.Response
 import java.io.File
 import java.io.IOException
 import java.time.Duration
+import java.util.LinkedHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 
@@ -78,7 +79,16 @@ class ComicRepositoryImpl(
 ) : BaseRepository(initManager), ComicRepository {
 
     companion object {
-        private val imageCache = mutableMapOf<Int, List<JmImage>>()
+        private const val IMAGE_DESCRIPTOR_CACHE_SIZE = 8
+        private val imageCache = object : LinkedHashMap<Int, List<JmImage>>(
+            IMAGE_DESCRIPTOR_CACHE_SIZE,
+            0.75f,
+            true,
+        ) {
+            override fun removeEldestEntry(
+                eldest: MutableMap.MutableEntry<Int, List<JmImage>>?
+            ): Boolean = size > IMAGE_DESCRIPTOR_CACHE_SIZE
+        }
         private val cleanHttpClient: OkHttpClient by lazy {
             OkHttpClient.Builder()
                 .connectTimeout(15, TimeUnit.SECONDS)

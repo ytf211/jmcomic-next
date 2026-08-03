@@ -34,12 +34,14 @@ import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.navigation.compose.rememberNavController
 import com.par9uet.jm.store.InitManager
 import com.par9uet.jm.store.LocalSettingManager
+import com.par9uet.jm.store.StartupState
 import com.par9uet.jm.store.ToastManager
 import com.par9uet.jm.store.UserManager
 import com.par9uet.jm.ui.screens.AppLockScreen
 import com.par9uet.jm.ui.screens.AppScreen
 import com.par9uet.jm.ui.screens.LoadingScreen
 import com.par9uet.jm.ui.screens.NsfwWarningDialog
+import com.par9uet.jm.ui.screens.StartupErrorScreen
 import com.par9uet.jm.ui.screens.WelcomeScreen
 import com.par9uet.jm.ui.viewModel.GlobalViewModel
 import com.par9uet.jm.ui.viewModel.UserViewModel
@@ -55,14 +57,14 @@ fun App(
     localSettingManager: LocalSettingManager = getKoin().get(),
     initManager: InitManager = getKoin().get(),
     userManager: UserManager = getKoin().get(),
-    remoteSettingManager: com.par9uet.jm.store.RemoteSettingManager = getKoin().get(),
-    imageLoader: coil.ImageLoader = getKoin().get()
+    remoteSettingManager: com.par9uet.jm.store.RemoteSettingManager = getKoin().get()
 ) {
     LaunchedEffect(Unit) {
         globalViewModel.init()
     }
     val localSetting by localSettingManager.localSettingState.collectAsState()
     val remoteSetting by remoteSettingManager.remoteSettingState.collectAsState()
+    val startupState by initManager.startupState.collectAsState()
 
     // 锁定状态：初始为 true（启动即锁定），等待本地设置加载完成后根据 appLockEnabled 决定
     // 这样可以避免启动时主界面内容闪现后再显示锁屏
@@ -72,35 +74,25 @@ fun App(
     var sessionNsfwDismissed by remember { mutableStateOf(false) }
     // 首次启动引导
     var showOnboarding by remember { mutableStateOf(false) }
-    // 启动加载动画（初始化期间及引导完成后显示）
-    var showLoadingScreen by remember { mutableStateOf(true) }
 
-    // 本地设置初始化加载完成后再决定启动时是否锁定
-    // 增加超时保护：最多等待 8 秒，避免网络初始化卡死导致永久黑屏
-    LaunchedEffect(Unit) {
-        runCatching {
-            kotlinx.coroutines.withTimeoutOrNull(8000L) {
-                initManager.deferred.await()
+    // 只有首屏必需的本地状态全部成功恢复后才决定是否解锁；失败时保持锁定。
+    LaunchedEffect(startupState) {
+        when (startupState) {
+            StartupState.Initializing -> {
+                settingsLoaded = false
+                isLocked = true
             }
-        }
-        settingsLoaded = true
-        // 首次启动且未完成引导时显示欢迎页
-        if (!localSettingManager.localSettingState.value.onboardingCompleted) {
-            showOnboarding = true
-        }
-        // 仅当应用锁未开启时才解锁；若已开启，isLocked 保持 true，立即显示锁屏
-        if (!localSettingManager.localSettingState.value.appLockEnabled) {
-            isLocked = false
-        }
-        if (localSettingManager.localSettingState.value.nsfwWarningDismissed) {
-            sessionNsfwDismissed = true
-        }
-    }
-    // 启动加载动画：设置加载完成且无需引导时，显示 2.5 秒后自动消失
-    LaunchedEffect(settingsLoaded, showOnboarding) {
-        if (settingsLoaded && !showOnboarding) {
-            kotlinx.coroutines.delay(2500L)
-            showLoadingScreen = false
+            is StartupState.Failed -> {
+                settingsLoaded = false
+                isLocked = true
+            }
+            StartupState.Ready -> {
+                settingsLoaded = true
+                val loadedSetting = localSettingManager.localSettingState.value
+                showOnboarding = !loadedSetting.onboardingCompleted
+                isLocked = loadedSetting.appLockEnabled
+                sessionNsfwDismissed = loadedSetting.nsfwWarningDismissed
+            }
         }
     }
     // 应用锁被关闭时解除锁定
@@ -113,14 +105,16 @@ fun App(
         if (!settingsLoaded) return@LaunchedEffect
         val ls = localSettingManager.localSettingState.value
         if (!ls.autoSignInEnabled) return@LaunchedEffect
+        userManager.sessionReady.first { it }
         if (!userManager.isLoginState.first()) return@LaunchedEffect
         kotlinx.coroutines.delay(2000L)
         userViewModel.getSignInData()
         val signData = kotlinx.coroutines.withTimeoutOrNull(10000L) {
             userViewModel.signDataState.first { state -> !state.isLoading }
         } ?: return@LaunchedEffect
+        if (signData.isError || signData.data == null) return@LaunchedEffect
         val todayDayOfMonth = java.util.Calendar.getInstance().get(java.util.Calendar.DAY_OF_MONTH)
-        val isSigned = signData.data?.dateMap?.get(todayDayOfMonth)?.isSign == true
+        val isSigned = signData.data.dateMap[todayDayOfMonth]?.isSign == true
         if (isSigned) return@LaunchedEffect
         userViewModel.signIn()
     }
@@ -209,10 +203,23 @@ fun App(
         }
     }
 
-    // 启动加载动画：设置加载前或引导完成后的最短显示时间内显示加载页
-    if (!settingsLoaded || (showLoadingScreen && !showOnboarding)) {
-        LoadingScreen()
-        return
+    // 网络初始化不阻塞进入应用；本地初始化失败则保持 fail-closed 并允许重试。
+    when (val state = startupState) {
+        StartupState.Initializing -> {
+            LoadingScreen()
+            return
+        }
+        is StartupState.Failed -> {
+            StartupErrorScreen(
+                message = state.message,
+                onRetry = globalViewModel::retryInitialization,
+            )
+            return
+        }
+        StartupState.Ready -> if (!settingsLoaded) {
+            LoadingScreen()
+            return
+        }
     }
 
     // 优先级：欢迎引导 > 应用锁 > NSFW 警告 > 主应用
@@ -280,6 +287,7 @@ fun App(
         // 剪切板自动检测漫画编码弹窗（左侧封面小窗口 + 右侧信息）
         val detectedComic = clipboardDetectedComic
         if (detectedComic != null) {
+            val dialogImageLoader: coil.ImageLoader = getKoin().get()
             androidx.compose.material3.AlertDialog(
                 onDismissRequest = {
                     clipboardDetectedComic = null
@@ -294,7 +302,7 @@ fun App(
                         // 左侧封面小窗口
                         coil.compose.AsyncImage(
                             model = "${remoteSetting.imgHost}/media/albums/${detectedComic.id}_3x4.jpg",
-                            imageLoader = imageLoader,
+                            imageLoader = dialogImageLoader,
                             contentDescription = "${detectedComic.name}的封面",
                             contentScale = androidx.compose.ui.layout.ContentScale.Crop,
                             modifier = Modifier
