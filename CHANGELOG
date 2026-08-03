@@ -6,7 +6,7 @@
 - 增加启动失败重试与应用锁 fail-closed 保护，避免本地设置异常时绕过锁定。
 - 下载任务支持 1～3 路可配置并发，同时限制高内存图片解扰，降低 CPU 与内存峰值。
 - 图片处理改用受控并发与有界缓存，减少长时间阅读、下载时的资源占用。
-- Release APK 按 `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64` 分架构构建，可选择仅编译一个架构。
+- Release 默认构建一个 universal APK，同时保留 `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64` 单架构编译命令。
 - Android 构建默认使用 8 个 Gradle worker，并移除无法在 Android 运行的桌面 WebP 原生库以缩小 APK。
 
 ---

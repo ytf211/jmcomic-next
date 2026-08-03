@@ -91,9 +91,11 @@ android {
     }
     splits {
         abi {
-            isEnable = true
-            reset()
-            include(*(targetAbi?.let(::listOf) ?: supportedAbis).toTypedArray())
+            isEnable = targetAbi != null
+            if (targetAbi != null) {
+                reset()
+                include(targetAbi)
+            }
             isUniversalApk = false
         }
     }

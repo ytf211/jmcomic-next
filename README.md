@@ -100,7 +100,7 @@ mise install
 # 构建 Debug APK
 mise run android-debug
 
-# 构建全部四种 ABI 的 Release APK
+# 构建默认 universal Release APK
 mise run android-release
 
 # 只构建一个 ABI（支持 arm64-v8a、armeabi-v7a、x86、x86_64）
@@ -137,7 +137,7 @@ Gradle daemon、配置缓存、构建缓存和 Kotlin 增量编译已在 `gradle
 GRADLE_MAX_WORKERS=4 mise run android-release
 ```
 
-Release 和 Debug 构建默认输出 `arm64-v8a`、`armeabi-v7a`、`x86`、`x86_64` 四种独立 APK，不额外生成 universal APK；在命令末尾传 ABI 可只注册和构建一个架构输出。
+不传 ABI 时，Release 和 Debug 构建默认只输出一个包含所有受支持架构的 universal APK；在命令末尾传入 `arm64-v8a`、`armeabi-v7a`、`x86` 或 `x86_64`，可只注册和构建对应的单架构 APK。
 
 首次构建、依赖变更或新 Git 提交后需要完整配置；后续相同任务会复用配置缓存以缩短构建时间。
 

@@ -83,7 +83,7 @@ if [[ "$build_type" == "debug" || "$build_type" == "release" ]]; then
     if [[ -n "$target_abi" ]]; then
         printf 'Building Android ABI: %s\n' "$target_abi"
     else
-        printf 'Building Android ABIs: arm64-v8a, armeabi-v7a, x86, x86_64\n'
+        printf 'Building universal Android APK\n'
     fi
 fi
 
