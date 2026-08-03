@@ -21,7 +21,7 @@ val databaseModule = module {
             AppDatabase::class.java,
             "app_database"
         )
-            .addMigrations(MIGRATION_2_3, MIGRATION_3_4)
+            .addMigrations(MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
             .fallbackToDestructiveMigration(false)
             .build()
     }
@@ -30,7 +30,7 @@ val databaseModule = module {
     viewModel { DownloadViewModel(get(), get()) }
     viewModel { DownloadComicDetailViewModel(get()) }
 
-    worker { DownloadComicWorker(get(), get(), get(), get(), get(), get(), get()) }
+    worker { DownloadComicWorker(get(), get(), get(), get(), get(), get(), get(), get()) }
 }
 
 private val MIGRATION_2_3 = object : Migration(2, 3) {
@@ -44,5 +44,13 @@ private val MIGRATION_2_3 = object : Migration(2, 3) {
 private val MIGRATION_3_4 = object : Migration(3, 4) {
     override fun migrate(db: SupportSQLiteDatabase) {
         db.execSQL("ALTER TABLE download_comics ADD COLUMN tagList TEXT NOT NULL DEFAULT '[]'")
+    }
+}
+
+private val MIGRATION_4_5 = object : Migration(4, 5) {
+    override fun migrate(db: SupportSQLiteDatabase) {
+        db.execSQL(
+            "ALTER TABLE download_comics ADD COLUMN chapterOrder INTEGER NOT NULL DEFAULT 2147483647"
+        )
     }
 }

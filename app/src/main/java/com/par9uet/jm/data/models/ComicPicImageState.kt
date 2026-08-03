@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.IntSize
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.drawable.toBitmap
 import coil.ImageLoader
+import coil.request.CachePolicy
 import coil.request.ErrorResult
 import coil.request.ImageRequest
 import coil.request.SuccessResult
@@ -24,6 +25,7 @@ import com.par9uet.jm.cache.getCommonPicDecodeCacheDir
 import com.par9uet.jm.utils.compressWebpCompat
 import com.par9uet.jm.utils.logError
 import com.par9uet.jm.utils.md5
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import java.io.File
@@ -48,6 +50,9 @@ class ComicPicImageState(
     val __speed: String,
     private val picImageLoader: ImageLoader,
     private val imageFetcher: (suspend () -> ByteArray?)? = null,
+    private val decodedFileOverride: File? = null,
+    private val cacheInMemory: Boolean = true,
+    private val cacheOnDisk: Boolean = true,
 ) {
 
     companion object {
@@ -61,6 +66,8 @@ class ComicPicImageState(
             imageResultState = ImageResultState.Loading
             try {
                 decodeImage(context, downscale)
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: OutOfMemoryError) {
                 logError("ComicPicImage", "解码图片 OOM: ${e.message}")
                 System.gc()
@@ -74,11 +81,9 @@ class ComicPicImageState(
 
     private suspend fun decodeImage(context: Context, downscale: Boolean = false) {
         val cacheDir = getCommonPicDecodeCacheDir(context, comicId)
-        if (!cacheDir.exists()) {
-            cacheDir.mkdirs()
-        }
         val page = extractPageFromUrl()
-        val cacheFile = File(cacheDir, "$page.webp")
+        val cacheFile = decodedFileOverride ?: File(cacheDir, "$page.webp")
+        cacheFile.parentFile?.mkdirs()
 
         // 检查缓存文件是否存在
         if (cacheFile.exists()) {
@@ -109,6 +114,8 @@ class ComicPicImageState(
             // 这里必须使用原始 size ，不然解密会有问题，出现白线
             .size { Size.ORIGINAL }
             .allowHardware(false)
+            .memoryCachePolicy(if (cacheInMemory) CachePolicy.ENABLED else CachePolicy.DISABLED)
+            .diskCachePolicy(if (cacheOnDisk) CachePolicy.ENABLED else CachePolicy.DISABLED)
             .build()
 
         when (val result = picImageLoader.execute(request)) {
@@ -128,6 +135,8 @@ class ComicPicImageState(
                     }
                     imageResultState =
                         ImageResultState.Success(decodedImageBitmap, decodeImageAspectRatio)
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: OutOfMemoryError) {
                     logError("ComicPicImage", "图片处理 OOM: ${e.message}")
                     System.gc()
@@ -142,6 +151,8 @@ class ComicPicImageState(
                 // Coil 加载失败，尝试使用内置 API 的 imageFetcher 回退
                 val fetchedBytes = try {
                     imageFetcher?.invoke()
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     logError("ComicPicImage", "imageFetcher 调用失败: ${e.stackTraceToString()}")
                     null
@@ -168,6 +179,8 @@ class ComicPicImageState(
                                 ImageResultState.Success(decodedImageBitmap, decodeImageAspectRatio)
                             return
                         }
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: OutOfMemoryError) {
                         logError("ComicPicImage", "内置API图片解码 OOM: ${e.message}")
                         System.gc()
@@ -181,6 +194,10 @@ class ComicPicImageState(
                 imageResultState = ImageResultState.Failure("网络错误")
             }
         }
+    }
+
+    fun clearDecodedImage() {
+        imageResultState = ImageResultState.Loading
     }
 
     private fun decodeBitmap(originalBitmap: Bitmap, page: String): Bitmap {
@@ -247,7 +264,7 @@ class ComicPicImageState(
     private suspend fun saveBitmapAsWebp(bitmap: Bitmap, file: File) {
         withContext(Dispatchers.IO) {
             FileOutputStream(file).use { out ->
-                bitmap.compressWebpCompat(50, out)
+                check(bitmap.compressWebpCompat(50, out)) { "图片压缩失败" }
             }
         }
     }

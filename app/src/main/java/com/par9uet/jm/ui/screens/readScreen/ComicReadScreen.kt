@@ -72,6 +72,7 @@ import com.par9uet.jm.store.ReadHistoryManager
 import com.par9uet.jm.store.UserManager
 import com.par9uet.jm.ui.screens.LocalMainNavController
 import com.par9uet.jm.ui.viewModel.ComicReadViewModel
+import kotlinx.coroutines.delay
 import org.koin.androidx.compose.koinViewModel
 import org.koin.compose.getKoin
 
@@ -146,6 +147,10 @@ fun ComicReadScreen(
     val nextChapter = remember(readableChapters, chapterIndex) {
         readableChapters.getOrNull(chapterIndex + 1)
     }
+    val toolbarChapterName = readerPosition?.chapterName
+        ?.ifBlank { null }
+        ?: readableChapters.firstOrNull { it.id == activeChapterId }?.name
+        ?: "当前章节"
 
     fun navigateToChapter(chapter: ComicChapter?) {
         if (chapter == null) return
@@ -254,10 +259,22 @@ fun ComicReadScreen(
         }
     }
 
-    LaunchedEffect(readHistoryComicId, readerPosition?.chapterId) {
+    LaunchedEffect(localSetting.continuousScrollEnabled) {
+        if (!localSetting.continuousScrollEnabled) {
+            comicReadViewModel.cancelContinuousAppend()
+        }
+    }
+
+    LaunchedEffect(readHistoryComicId, readerPosition) {
         val position = readerPosition ?: return@LaunchedEffect
         if (readHistoryComicId > 0) {
-            readHistoryManager.markRead(readHistoryComicId, position.chapterId)
+            delay(300)
+            readHistoryManager.saveReadProgress(
+                readHistoryComicId,
+                position.chapterId,
+                position.localPageIndex,
+                position.pageCount
+            )
         }
     }
 
@@ -388,6 +405,7 @@ fun ComicReadScreen(
                 ToolsBar(
                     currentIndex = toolbarCurrentIndex,
                     pageCount = toolbarPageCount,
+                    chapterName = toolbarChapterName,
                     previousChapterEnabled = previousChapter != null,
                     nextChapterEnabled = nextChapter != null,
                     showResetZoom = zoomState.isZoomed,

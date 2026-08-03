@@ -12,6 +12,7 @@ import com.par9uet.jm.retrofit.model.LikeComicResponse
 import com.par9uet.jm.retrofit.model.NetWorkResult
 import com.par9uet.jm.retrofit.model.WeekRecommendComicResponse
 import com.par9uet.jm.retrofit.model.WeekResponse
+import java.io.File
 
 interface ComicRepository {
     suspend fun getComicDetail(id: Int): NetWorkResult<ComicDetailResponse>
@@ -21,6 +22,7 @@ interface ComicRepository {
     suspend fun getHomeSwiperComicList(): NetWorkResult<List<HomeSwiperComicListItemResponse>>
     suspend fun getComicPicList(id: Int, shunt: String): NetWorkResult<ComicPicListResponse>
     suspend fun downloadImageBytes(comicId: Int, imageIndex: Int): ByteArray?
+    suspend fun downloadImageToFile(url: String, target: File): Boolean
     suspend fun getComicList(
         page: Int,
         order: ComicSearchOrderFilter,

@@ -18,11 +18,16 @@ object DownloadSpeedTracker {
     val speedByGroup: StateFlow<Map<Int, Float>> = _speedByGroup.asStateFlow()
 
     private val samplesByGroup = mutableMapOf<Int, SpeedSample>()
+    private val activeWorkersByGroup = mutableMapOf<Int, Int>()
 
     /**
      * 开始跟踪一个下载任务的速度
      */
+    @Synchronized
     fun startTracking(groupId: Int) {
+        val activeWorkers = (activeWorkersByGroup[groupId] ?: 0) + 1
+        activeWorkersByGroup[groupId] = activeWorkers
+        if (samplesByGroup.containsKey(groupId)) return
         samplesByGroup[groupId] = SpeedSample(
             totalBytes = 0L,
             startTimeMs = System.currentTimeMillis()
@@ -33,6 +38,7 @@ object DownloadSpeedTracker {
     /**
      * 增加已下载字节数，并更新速度（bytes/s）
      */
+    @Synchronized
     fun addBytes(groupId: Int, bytes: Long) {
         val sample = samplesByGroup[groupId] ?: return
         val newTotal = sample.totalBytes + bytes
@@ -45,7 +51,14 @@ object DownloadSpeedTracker {
     /**
      * 停止跟踪，移除速度数据
      */
+    @Synchronized
     fun stopTracking(groupId: Int) {
+        val activeWorkers = (activeWorkersByGroup[groupId] ?: 1) - 1
+        if (activeWorkers > 0) {
+            activeWorkersByGroup[groupId] = activeWorkers
+            return
+        }
+        activeWorkersByGroup.remove(groupId)
         samplesByGroup.remove(groupId)
         _speedByGroup.value = _speedByGroup.value - groupId
     }

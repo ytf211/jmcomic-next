@@ -71,7 +71,9 @@ class DownloadComicDetailViewModel(
             if (allItems.isEmpty() && completeItems.isEmpty()) {
                 DownloadComicDetailState(loading = false)
             } else {
-                val detailItems = (allItems + completeItems).distinctBy { it.id }.sortedBy { it.createTime }
+                val detailItems = (allItems + completeItems)
+                    .distinctBy { it.id }
+                    .sortedWith(compareBy<DownloadComic> { it.chapterOrder }.thenBy { it.createTime })
                 if (detailItems.isEmpty()) {
                     DownloadComicDetailState(loading = false)
                 } else {
@@ -112,7 +114,8 @@ class DownloadComicDetailViewModel(
         val coverItem = detailItems.firstOrNull { it.coverPath.isNotBlank() }
         val zipItem = completeItems.firstOrNull { it.zipPath.isNotBlank() }
             ?: detailItems.firstOrNull { it.zipPath.isNotBlank() }
-        val completeSorted = completeItems.sortedBy { it.createTime }
+        val completeSorted = completeItems
+            .sortedWith(compareBy<DownloadComic> { it.chapterOrder }.thenBy { it.createTime })
 
         return DownloadComicDetailState(
             loading = false,

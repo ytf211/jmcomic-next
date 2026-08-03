@@ -30,6 +30,7 @@ import com.par9uet.jm.ui.models.ReaderPosition
 import com.par9uet.jm.utils.log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -76,6 +77,7 @@ class ComicReadViewModel(
     val size: Int get() = _comicPicState.value.data?.size ?: 0
 
     private val prefetchSet = mutableSetOf<Int>()
+    private val decodeJobs = mutableMapOf<Int, Job>()
     // 内存优化模式下的并发解码信号量，按需创建
     private var decodeSemaphore: Semaphore? = null
     private var decodeSemaphorePermits: Int = 0
@@ -93,9 +95,22 @@ class ComicReadViewModel(
     private fun resetContinuousReader() {
         appendJob?.cancel()
         appendJob = null
+        decodeJobs.values.forEach { it.cancel() }
+        decodeJobs.clear()
         readerGeneration++
+        _comicPicState.value.data?.forEach { it.clearDecodedImage() }
         _continuousReaderState.value = ContinuousReaderState()
         prefetchSet.clear()
+    }
+
+    fun cancelContinuousAppend() {
+        if (_continuousReaderState.value.appendState !is ChapterAppendState.Loading) return
+        readerGeneration++
+        appendJob?.cancel()
+        appendJob = null
+        _continuousReaderState.value = _continuousReaderState.value.copy(
+            appendState = ChapterAppendState.Idle
+        )
     }
 
     private fun setInitialChapterRange(chapterId: Int, chapterName: String, pageCount: Int) {
@@ -120,7 +135,7 @@ class ComicReadViewModel(
             }
             when (val data = comicRepository.getComicDetail(comicId)) {
                 is NetWorkResult.Error -> {
-                    readHistoryComicId.intValue = readHistoryManager.markRead(comicId, comicId)
+                    readHistoryComicId.intValue = comicId
                     _comicDetailState.update {
                         it.copy(
                             isError = true,
@@ -131,7 +146,7 @@ class ComicReadViewModel(
 
                 is NetWorkResult.Success<ComicDetailResponse> -> {
                     val comic = data.data.toComic()
-                    readHistoryComicId.intValue = readHistoryManager.markRead(comic, comicId)
+                    readHistoryComicId.intValue = readHistoryManager.historyKey(comic, comicId)
                     _comicDetailState.update {
                         it.copy(
                             data = comic
@@ -204,30 +219,44 @@ class ComicReadViewModel(
                 }
 
                 is NetWorkResult.Success<ComicPicListResponse> -> {
-                    _comicPicState.update {
-                        it.copy(
-                            data = data.data.list.mapIndexed { index, item ->
-                                ComicPicImageState(
-                                    index,
-                                    comicId,
-                                    item,
-                                    data.data.__scrambleId,
-                                    data.data.__speed,
-                                    picImageLoader,
-                                    imageFetcher = {
-                                        comicRepository.downloadImageBytes(comicId, index)
-                                    }
-                                )
-                            }
+                    if (data.data.list.isEmpty()) {
+                        _comicPicState.update {
+                            it.copy(
+                                data = emptyList(),
+                                isError = true,
+                                errorMsg = "图片列表为空"
+                            )
+                        }
+                    } else {
+                        _comicPicState.update {
+                            it.copy(
+                                data = data.data.list.mapIndexed { index, item ->
+                                    ComicPicImageState(
+                                        index,
+                                        comicId,
+                                        item,
+                                        data.data.__scrambleId,
+                                        data.data.__speed,
+                                        picImageLoader,
+                                        imageFetcher = {
+                                            comicRepository.downloadImageBytes(comicId, index)
+                                        }
+                                    )
+                                }
+                            )
+                        }
+                        setInitialChapterRange(
+                            chapterId = comicId,
+                            chapterName = comicDetailState.value.data?.comicChapterList
+                                ?.firstOrNull { it.id == comicId }?.name.orEmpty(),
+                            pageCount = data.data.list.size,
                         )
+                        readHistoryComicId.intValue = readHistoryManager.markRead(
+                            readHistoryComicId.intValue.takeIf { it > 0 } ?: comicId,
+                            comicId
+                        )
+                        onSuccess?.invoke()
                     }
-                    setInitialChapterRange(
-                        chapterId = comicId,
-                        chapterName = comicDetailState.value.data?.comicChapterList
-                            ?.firstOrNull { it.id == comicId }?.name.orEmpty(),
-                        pageCount = data.data.list.size,
-                    )
-                    onSuccess?.invoke()
                 }
             }
             _comicPicState.update {
@@ -251,7 +280,6 @@ class ComicReadViewModel(
             prefetchSet.clear()
             val downloadComic = downloadComicDao.getById(comicId)
             val groupId = downloadComic?.groupId?.takeIf { it != 0 } ?: comicId
-            readHistoryComicId.intValue = readHistoryManager.markRead(groupId, comicId)
             loadLocalChapterList(comicId, downloadComic)
             val imageDir = ensureLocalImageDir(context, comicId, downloadComic)
             val files = imageDir
@@ -289,6 +317,7 @@ class ComicReadViewModel(
                 chapterName = downloadComic?.chapterName.orEmpty(),
                 pageCount = files.size,
             )
+            readHistoryComicId.intValue = readHistoryManager.markRead(groupId, comicId)
             onSuccess?.invoke()
         }
     }
@@ -470,6 +499,7 @@ class ComicReadViewModel(
         val count = localSettingManager.localSettingState.value.prefetchCount
         val start = max(0, index - count)
         val end = min(size - 1, index + count)
+        trimDecodedImages(start, end)
         decode(index, context) {
             for (i in index + 1..end) {
                 log("pre decode index $i")
@@ -487,6 +517,7 @@ class ComicReadViewModel(
         val count = localSettingManager.localSettingState.value.prefetchCount
         val start = max(0, min(firstIndex, lastIndex) - count)
         val end = min(size - 1, max(firstIndex, lastIndex) + count)
+        trimDecodedImages(start, end)
         for (i in start..end) {
             decode(i, context)
         }
@@ -508,6 +539,18 @@ class ComicReadViewModel(
         decodeIndex(index, context)
     }
 
+    private fun trimDecodedImages(keepStart: Int, keepEnd: Int) {
+        val pages = comicPicState.value.data.orEmpty()
+        prefetchSet
+            .filter { it !in keepStart..keepEnd }
+            .toList()
+            .forEach { index ->
+                prefetchSet.remove(index)
+                decodeJobs.remove(index)?.cancel()
+                pages.getOrNull(index)?.clearDecodedImage()
+            }
+    }
+
     private fun decode(index: Int, context: Context, onComplete: (() -> Unit)? = null) {
         val comicPicImageState = comicPicState.value.data?.getOrNull(index) ?: return
         if (prefetchSet.contains(index)) {
@@ -517,7 +560,8 @@ class ComicReadViewModel(
         val setting = localSettingManager.localSettingState.value
         val downscale = setting.readMemoryOptEnabled
         val semaphore = getDecodeSemaphore()
-        viewModelScope.launch {
+        prefetchSet.add(index)
+        val job = viewModelScope.launch {
             try {
                 if (semaphore != null) {
                     semaphore.withPermit {
@@ -526,12 +570,19 @@ class ComicReadViewModel(
                 } else {
                     comicPicImageState.decode(context, downscale = false)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 log("decode index $index failed: ${e.message}")
+            } finally {
+                val currentJob = currentCoroutineContext()[Job]
+                if (decodeJobs[index] === currentJob) {
+                    decodeJobs.remove(index)
+                }
             }
             onComplete?.invoke()
         }
-        prefetchSet.add(index)
+        decodeJobs[index] = job
     }
 
     fun triggerToolBar() {

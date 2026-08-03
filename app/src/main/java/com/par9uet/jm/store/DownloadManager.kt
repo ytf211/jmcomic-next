@@ -65,7 +65,17 @@ class DownloadManager(
     fun downloadChapters(parentComic: Comic, chapters: List<ComicChapter>) {
         if (chapters.isEmpty()) return
         scope.launch(Dispatchers.IO) {
-            val existingIds = downloadComicDao.getExistingIds(chapters.map { it.id }).toSet()
+            val selectedIds = chapters.map { it.id }.toSet()
+            val orderedChapters = parentComic.comicChapterList.takeIf { it.isNotEmpty() } ?: chapters
+            val existingChapterIds = downloadComicDao.getExistingIds(
+                orderedChapters.map { it.id }
+            ).toSet()
+            orderedChapters.forEachIndexed { index, chapter ->
+                if (chapter.id in existingChapterIds) {
+                    downloadComicDao.updateChapterOrder(chapter.id, index)
+                }
+            }
+            val existingIds = existingChapterIds.intersect(selectedIds)
             val newChapters = chapters.filterNot { it.id in existingIds }
             if (newChapters.isEmpty()) {
                 toastManager.showAsync("所选章节已在缓存列表中")
@@ -74,6 +84,10 @@ class DownloadManager(
 
             val now = System.currentTimeMillis()
             newChapters.forEachIndexed { index, chapter ->
+                val chapterOrder = parentComic.comicChapterList
+                    .indexOfFirst { it.id == chapter.id }
+                    .takeIf { it >= 0 }
+                    ?: index
                 downloadComicDao.insert(
                     DownloadComic(
                         id = chapter.id,
@@ -87,7 +101,8 @@ class DownloadManager(
                         createTime = now + index,
                         groupId = parentComic.id,
                         groupName = parentComic.name,
-                        chapterName = chapter.name
+                        chapterName = chapter.name,
+                        chapterOrder = chapterOrder,
                     )
                 )
             }

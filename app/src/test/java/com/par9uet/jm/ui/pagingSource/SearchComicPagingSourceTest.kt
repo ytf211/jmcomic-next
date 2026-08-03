@@ -92,6 +92,8 @@ class SearchComicPagingSourceTest {
 
         override suspend fun downloadImageBytes(comicId: Int, imageIndex: Int): ByteArray? = unused()
 
+        override suspend fun downloadImageToFile(url: String, target: java.io.File): Boolean = unused()
+
         override suspend fun getWeekData(): NetWorkResult<WeekResponse> = unused()
 
         override suspend fun getWeekRecommendComicList(

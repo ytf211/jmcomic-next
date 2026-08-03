@@ -1,11 +1,12 @@
 package com.par9uet.jm.worker
 
 import android.content.Context
-import androidx.compose.ui.graphics.asAndroidBitmap
+import android.graphics.BitmapFactory
 import androidx.core.graphics.drawable.toBitmap
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
 import coil.ImageLoader
+import coil.request.CachePolicy
 import coil.request.ErrorResult
 import coil.request.ImageRequest
 import coil.request.SuccessResult
@@ -31,8 +32,11 @@ import com.par9uet.jm.utils.DownloadSpeedTracker
 import com.par9uet.jm.utils.cancelProgressNotification
 import com.par9uet.jm.utils.compressWebpCompat
 import com.par9uet.jm.utils.showProgressNotification
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -41,9 +45,21 @@ import java.io.FileOutputStream
 
 private const val DOWNLOAD_PAGE_TIMEOUT_MS = 180_000L
 private const val DOWNLOAD_MAX_ATTEMPTS = 6
+private const val MAX_PROGRESS_UPDATES_PER_CHAPTER = 20
 private val downloadConcurrencyGate = Semaphore(
     Runtime.getRuntime().availableProcessors().coerceIn(1, 2)
 )
+private val cacheWriteMutex = Mutex()
+
+internal fun shouldStreamOriginalPage(
+    comicId: Int,
+    scrambleId: Int,
+    speed: String,
+    url: String,
+): Boolean {
+    val isGif = url.substringBefore('?').endsWith(".gif", ignoreCase = true)
+    return !isGif && (comicId <= scrambleId || speed == "1")
+}
 
 class DownloadComicWorker(
     private val appContext: Context,
@@ -52,6 +68,7 @@ class DownloadComicWorker(
     private val remoteSettingManager: RemoteSettingManager,
     private val localSettingManager: LocalSettingManager,
     private val comicRepository: ComicRepository,
+    private val imageLoader: ImageLoader,
     private val downloadToastAggregator: DownloadToastAggregator,
 ) : CoroutineWorker(appContext, params) {
 
@@ -71,10 +88,12 @@ class DownloadComicWorker(
             it.groupId.takeIf { g -> g != 0 } ?: comicId
         } ?: comicId
 
+        var trackingStarted = false
         return try {
             val downloadTask = downloadComicDao.getById(comicId) ?: return Result.failure()
             downloadComicDao.updateStatus(UpdateComicStatus(comicId, "downloading"))
             DownloadSpeedTracker.startTracking(coverOwnerId)
+            trackingStarted = true
             showComicCacheNotification(
                 downloadTask,
                 resolveGroupProgress(downloadTask, downloadTask.progress)
@@ -90,45 +109,62 @@ class DownloadComicWorker(
             downloadComicDao.updateZipPath(UpdateComicZipPath(comicId, chapterDirPath))
             downloadComicDao.updateStatus(UpdateComicStatus(comicId, "complete"))
             writeCacheConfig(comicId)
-            DownloadSpeedTracker.stopTracking(coverOwnerId)
             cancelComicCacheNotificationIfIdle(downloadTask)
             downloadToastAggregator.report(batchId, batchTotal, comicId, success = true)
             Result.success()
+        } catch (e: CancellationException) {
+            throw e
         } catch (e: Exception) {
             if (runAttemptCount < DOWNLOAD_MAX_ATTEMPTS - 1) {
                 Result.retry()
             } else {
                 downloadComicDao.updateStatus(UpdateComicStatus(comicId, "error"))
-                DownloadSpeedTracker.stopTracking(coverOwnerId)
                 downloadComicDao.getById(comicId)?.let {
                     cancelComicCacheNotificationIfIdle(it)
                 }
                 downloadToastAggregator.report(batchId, batchTotal, comicId, success = false)
                 Result.failure()
             }
+        } finally {
+            if (trackingStarted) {
+                DownloadSpeedTracker.stopTracking(coverOwnerId)
+            }
         }
     }
 
     private suspend fun downloadCover(downloadTask: DownloadComic, coverOwnerId: Int): String {
-        return withContext(Dispatchers.IO) {
-            val coverUrl =
-                "${remoteSettingManager.remoteSettingState.value.imgHost}/media/albums/${coverOwnerId}_3x4.jpg"
-            val loader = ImageLoader(appContext)
-            val request = ImageRequest.Builder(appContext)
-                .data(coverUrl)
-                .allowHardware(false)
-                .build()
+        return cacheWriteMutex.withLock {
+            val file = getComicCoverDownloadFile(appContext, downloadTask)
+            if (isValidImageFile(file)) return@withLock file.absolutePath
+            file.delete()
 
-            when (val result = loader.execute(request)) {
-                is ErrorResult -> ""
-                is SuccessResult -> {
-                    val bitmap = result.drawable.toBitmap()
-                    val file = getComicCoverDownloadFile(appContext, downloadTask)
-                    FileOutputStream(file).use { out ->
-                        bitmap.compressWebpCompat(50, out)
+            val tempFile = File(file.parentFile, "${file.name}.part")
+            tempFile.delete()
+            try {
+                val coverUrl =
+                    "${remoteSettingManager.remoteSettingState.value.imgHost}/media/albums/${coverOwnerId}_3x4.jpg"
+                val loader = imageLoader
+                val request = ImageRequest.Builder(appContext)
+                    .data(coverUrl)
+                    .allowHardware(false)
+                    .memoryCachePolicy(CachePolicy.DISABLED)
+                    .diskCachePolicy(CachePolicy.DISABLED)
+                    .build()
+
+                when (val result = loader.execute(request)) {
+                    is ErrorResult -> ""
+                    is SuccessResult -> {
+                        val bitmap = result.drawable.toBitmap()
+                        FileOutputStream(tempFile).use { out ->
+                            check(bitmap.compressWebpCompat(50, out)) { "封面压缩失败" }
+                        }
+                        check(isValidImageFile(tempFile)) { "封面文件无效" }
+                        replaceAtomically(tempFile, file)
+                        file.absolutePath
                     }
-                    file.absolutePath
                 }
+            } finally {
+                tempFile.delete()
             }
         }
     }
@@ -144,45 +180,37 @@ class DownloadComicWorker(
                     }
 
                     val dir = getComicChapterDownloadDir(appContext, downloadTask)
-                    val loader = ImageLoader(appContext)
+                    val loader = imageLoader
+                    val totalPages = data.data.list.size
+                    val progressInterval = (totalPages / MAX_PROGRESS_UPDATES_PER_CHAPTER)
+                        .coerceAtLeast(1)
                     var maxProgress = downloadComicDao.getById(comicId)?.progress ?: 0f
 
-                    data.data.list.mapIndexed { index, url ->
-                        val file = File(dir, "$index.webp")
-                        val nextProgress = (index + 1).toFloat() / data.data.list.size
-                        if (file.exists()) {
-                            val progress = updateChapterProgressIfAdvanced(
-                                downloadTask = downloadTask,
-                                currentMaxProgress = maxProgress,
-                                nextProgress = nextProgress
-                            )
-                            maxProgress = progress.chapterProgress
-                            showComicCacheNotification(downloadTask, progress.groupProgress)
-                            return@mapIndexed file.absolutePath
-                        }
-
-                        val imageState = ComicPicImageState(
-                            index = index,
-                            comicId = comicId,
-                            originSrc = url,
-                            __scrambleId = data.data.__scrambleId,
-                            __speed = data.data.__speed,
-                            picImageLoader = loader
-                        )
-                        try {
-                            withTimeout(DOWNLOAD_PAGE_TIMEOUT_MS) {
-                                imageState.decode(appContext)
+                    buildList(totalPages) {
+                        data.data.list.forEachIndexed { index, url ->
+                            val file = File(dir, "$index.webp")
+                            val nextProgress = (index + 1).toFloat() / totalPages
+                            var downloaded = false
+                            if (!isValidImageFile(file)) {
+                                file.delete()
+                                downloadPage(
+                                    file = file,
+                                    url = url,
+                                    index = index,
+                                    comicId = comicId,
+                                    scrambleId = data.data.__scrambleId,
+                                    speed = data.data.__speed,
+                                    loader = loader,
+                                )
+                                downloaded = true
                             }
-                        } catch (e: Exception) {
-                            throw IllegalStateException("第 ${index + 1} 页下载或解码超时", e)
-                        }
-
-                        when (val result = imageState.imageResultState) {
-                            is ImageResultState.Success -> {
-                                FileOutputStream(file).use { out ->
-                                    result.decodeImageBitmap.asAndroidBitmap().compressWebpCompat(50, out)
-                                }
-                                DownloadSpeedTracker.addBytes(downloadTask.groupId.takeIf { it != 0 } ?: downloadTask.id, file.length())
+                            if (downloaded) {
+                                DownloadSpeedTracker.addBytes(
+                                    downloadTask.groupId.takeIf { it != 0 } ?: downloadTask.id,
+                                    file.length()
+                                )
+                            }
+                            if (shouldReportProgress(index + 1, totalPages, progressInterval)) {
                                 val progress = updateChapterProgressIfAdvanced(
                                     downloadTask = downloadTask,
                                     currentMaxProgress = maxProgress,
@@ -190,16 +218,8 @@ class DownloadComicWorker(
                                 )
                                 maxProgress = progress.chapterProgress
                                 showComicCacheNotification(downloadTask, progress.groupProgress)
-                                file.absolutePath
                             }
-
-                            is ImageResultState.Failure -> {
-                                throw IllegalStateException("第 ${index + 1} 页下载失败：${result.reason}")
-                            }
-
-                            ImageResultState.Loading -> {
-                                throw IllegalStateException("第 ${index + 1} 页仍在加载中")
-                            }
+                            add(file.absolutePath)
                         }
                     }
                 }
@@ -207,12 +227,93 @@ class DownloadComicWorker(
         }
     }
 
+    private suspend fun downloadPage(
+        file: File,
+        url: String,
+        index: Int,
+        comicId: Int,
+        scrambleId: Int,
+        speed: String,
+        loader: ImageLoader,
+    ) {
+        val tempFile = File(file.parentFile, ".${file.name}.part")
+        tempFile.delete()
+        try {
+            withTimeout(DOWNLOAD_PAGE_TIMEOUT_MS) {
+                if (shouldStreamOriginalPage(comicId, scrambleId, speed, url)) {
+                    check(comicRepository.downloadImageToFile(url, tempFile)) {
+                        "第 ${index + 1} 页下载失败"
+                    }
+                } else {
+                    val imageState = ComicPicImageState(
+                        index = index,
+                        comicId = comicId,
+                        originSrc = url,
+                        __scrambleId = scrambleId,
+                        __speed = speed,
+                        picImageLoader = loader,
+                        imageFetcher = { comicRepository.downloadImageBytes(comicId, index) },
+                        decodedFileOverride = tempFile,
+                        cacheInMemory = false,
+                        cacheOnDisk = false,
+                    )
+                    try {
+                        imageState.decode(appContext)
+                        when (val result = imageState.imageResultState) {
+                            is ImageResultState.Success -> Unit
+                            is ImageResultState.Failure -> error("第 ${index + 1} 页下载失败：${result.reason}")
+                            ImageResultState.Loading -> error("第 ${index + 1} 页仍在加载中")
+                        }
+                    } finally {
+                        imageState.clearDecodedImage()
+                    }
+                }
+            }
+            check(isValidImageFile(tempFile)) { "第 ${index + 1} 页文件无效" }
+            replaceAtomically(tempFile, file)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            throw IllegalStateException("第 ${index + 1} 页下载或解码失败", e)
+        } finally {
+            tempFile.delete()
+        }
+    }
+
+    private fun shouldReportProgress(completedPages: Int, totalPages: Int, interval: Int): Boolean {
+        return completedPages == totalPages || completedPages % interval == 0
+    }
+
+    private fun isValidImageFile(file: File): Boolean {
+        if (!file.isFile || file.length() <= 0L) return false
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeFile(file.absolutePath, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return false
+
+        val sampleSize = generateSequence(1) { it * 2 }
+            .takeWhile { bounds.outWidth / it > 128 || bounds.outHeight / it > 128 }
+            .lastOrNull()
+            ?: 1
+        val decoded = BitmapFactory.decodeFile(
+            file.absolutePath,
+            BitmapFactory.Options().apply { inSampleSize = sampleSize }
+        ) ?: return false
+        decoded.recycle()
+        return true
+    }
+
+    private fun replaceAtomically(source: File, target: File) {
+        check(source.renameTo(target)) { "无法完成缓存文件写入" }
+    }
+
     private suspend fun writeCacheConfig(comicId: Int) {
-        val current = downloadComicDao.getById(comicId) ?: return
-        val groupId = current.groupId.takeIf { it != 0 } ?: current.id
-        val chapters = downloadComicDao.getByGroupId(groupId)
-        withContext(Dispatchers.IO) {
-            writeComicCacheConfig(appContext, current, chapters)
+        cacheWriteMutex.withLock {
+            val current = downloadComicDao.getById(comicId) ?: return@withLock
+            val groupId = current.groupId.takeIf { it != 0 } ?: current.id
+            val chapters = downloadComicDao.getByGroupId(groupId)
+            withContext(Dispatchers.IO) {
+                writeComicCacheConfig(appContext, current, chapters)
+            }
         }
     }
 

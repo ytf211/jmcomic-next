@@ -59,6 +59,7 @@ import kotlinx.coroutines.withContext
 import okhttp3.Cookie
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import java.io.File
 import java.time.Duration
 import java.util.concurrent.TimeUnit
 
@@ -599,6 +600,29 @@ class ComicRepositoryImpl(
                 }
             } catch (e: Exception) {
                 NetWorkResult.Error("内置 API 获取图片列表失败：${e.message ?: "未知错误"}")
+            }
+        }
+    }
+
+    override suspend fun downloadImageToFile(url: String, target: File): Boolean {
+        return withContext(Dispatchers.IO) {
+            val imageUrl = fixImageUrl(url)
+            try {
+                cleanHttpClient.newCall(buildImageRequest(imageUrl)).execute().use { response ->
+                    if (!response.isSuccessful) {
+                        logError("ComicRepositoryImpl", "下载图片失败: HTTP ${response.code} URL=$imageUrl")
+                        return@withContext false
+                    }
+                    val body = response.body ?: return@withContext false
+                    val expectedBytes = body.contentLength()
+                    val copiedBytes = target.outputStream().use { output ->
+                        body.byteStream().use { input -> input.copyTo(output) }
+                    }
+                    copiedBytes > 0L && (expectedBytes < 0L || copiedBytes == expectedBytes)
+                }
+            } catch (e: Exception) {
+                logError("ComicRepositoryImpl", "下载图片异常: ${e.message} URL=$imageUrl")
+                false
             }
         }
     }

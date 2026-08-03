@@ -43,14 +43,14 @@ interface DownloadComicDao {
     @Query(
         "SELECT * FROM download_comics " +
             "WHERE (groupId = :groupId OR (groupId = 0 AND id = :groupId)) " +
-            "ORDER BY createTime ASC"
+            "ORDER BY chapterOrder ASC, createTime ASC"
     )
     fun observeByGroupId(groupId: Int): Flow<List<DownloadComic>>
 
     @Query(
         "SELECT * FROM download_comics " +
             "WHERE status = 'complete' AND (groupId = :groupId OR (groupId = 0 AND id = :groupId)) " +
-            "ORDER BY createTime ASC"
+            "ORDER BY chapterOrder ASC, createTime ASC"
     )
     fun observeCompleteByGroupId(groupId: Int): Flow<List<DownloadComic>>
 
@@ -60,16 +60,19 @@ interface DownloadComicDao {
     @Query(
         "SELECT * FROM download_comics " +
             "WHERE (groupId = :groupId OR (groupId = 0 AND id = :groupId)) " +
-            "ORDER BY createTime ASC"
+            "ORDER BY chapterOrder ASC, createTime ASC"
     )
     suspend fun getByGroupId(groupId: Int): List<DownloadComic>
 
     @Query(
         "SELECT * FROM download_comics " +
             "WHERE status = 'complete' AND (groupId = :groupId OR (groupId = 0 AND id = :groupId)) " +
-            "ORDER BY createTime ASC"
+            "ORDER BY chapterOrder ASC, createTime ASC"
     )
     suspend fun getCompleteByGroupId(groupId: Int): List<DownloadComic>
+
+    @Query("UPDATE download_comics SET chapterOrder = :chapterOrder WHERE id = :comicId")
+    suspend fun updateChapterOrder(comicId: Int, chapterOrder: Int)
 
     @Query("SELECT id FROM download_comics WHERE id IN (:ids)")
     suspend fun getExistingIds(ids: List<Int>): List<Int>

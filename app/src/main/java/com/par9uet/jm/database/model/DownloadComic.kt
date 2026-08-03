@@ -18,4 +18,5 @@ data class DownloadComic(
     val groupId: Int = 0,
     val groupName: String = "",
     val chapterName: String = "",
+    val chapterOrder: Int = Int.MAX_VALUE,
 )

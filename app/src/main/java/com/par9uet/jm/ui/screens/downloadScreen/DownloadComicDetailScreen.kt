@@ -55,6 +55,7 @@ import androidx.compose.ui.unit.em
 import androidx.compose.ui.unit.sp
 import coil.ImageLoader
 import coil.compose.AsyncImage
+import com.par9uet.jm.store.ReadHistoryManager
 import com.par9uet.jm.store.RemoteSettingManager
 import com.par9uet.jm.store.ToastManager
 import com.par9uet.jm.store.DownloadManager
@@ -87,12 +88,14 @@ fun DownloadComicDetailScreen(
     imageLoader: ImageLoader = getKoin().get(),
     remoteSettingManager: RemoteSettingManager = getKoin().get(),
     toastManager: ToastManager = getKoin().get(),
-    downloadManager: DownloadManager = getKoin().get()
+    downloadManager: DownloadManager = getKoin().get(),
+    readHistoryManager: ReadHistoryManager = getKoin().get(),
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val mainNavController = LocalMainNavController.current
     val detailState by viewModel.detailState.collectAsState()
+    val readHistory by readHistoryManager.readHistoryState.collectAsState()
     val remoteSetting by remoteSettingManager.remoteSettingState.collectAsState()
     val scrollState = rememberScrollState()
     var cachedInfo by remember { mutableStateOf<CachedComicInfo?>(null) }
@@ -238,7 +241,15 @@ fun DownloadComicDetailScreen(
                             activeDialog = DownloadDetailDialog.ReadChapter
                         },
                         onRead = {
-                            mainNavController.navigate("localComicRead/${detailState.completeItems.first().id}")
+                            val savedChapterId = readHistoryManager.lastReadChapterId(
+                                detailState.remoteCoverComicId,
+                                readHistory
+                            )
+                            val chapterId = detailState.completeItems
+                                .firstOrNull { it.id == savedChapterId }
+                                ?.id
+                                ?: detailState.completeItems.first().id
+                            mainNavController.navigate("localComicRead/$chapterId")
                         }
                     )
                 }

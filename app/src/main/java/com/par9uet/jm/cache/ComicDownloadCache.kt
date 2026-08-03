@@ -66,7 +66,9 @@ fun writeComicCacheConfig(
     gson: Gson = Gson()
 ) {
     val rootDir = getComicDownloadRootDir(context, comic)
-    val chapterConfigs = chapters.sortedBy { it.createTime }.map { chapter ->
+    val chapterConfigs = chapters
+        .sortedWith(compareBy<DownloadComic> { it.chapterOrder }.thenBy { it.createTime })
+        .map { chapter ->
         val chapterDir = chapter.zipPath.takeIf { it.isNotBlank() }?.let(::File)?.takeIf { it.isDirectory }
             ?: File(rootDir, getChapterCacheName(chapter))
         DownloadComicCacheChapter(
@@ -93,5 +95,8 @@ fun writeComicCacheConfig(
         coverPath = persistedCoverPath ?: getComicCoverDownloadFile(context, comic).absolutePath,
         chapters = chapterConfigs,
     )
-    getComicConfigFile(context, comic).writeText(gson.toJson(config), Charsets.UTF_8)
+    val configFile = getComicConfigFile(context, comic)
+    val tempFile = File(configFile.parentFile, "${configFile.name}.part")
+    tempFile.writeText(gson.toJson(config), Charsets.UTF_8)
+    check(tempFile.renameTo(configFile)) { "无法完成缓存配置写入" }
 }
