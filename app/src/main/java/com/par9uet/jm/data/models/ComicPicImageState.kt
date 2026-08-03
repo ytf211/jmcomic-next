@@ -27,6 +27,8 @@ import com.par9uet.jm.utils.logError
 import com.par9uet.jm.utils.md5
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
 import java.io.FileOutputStream
@@ -40,6 +42,29 @@ sealed class ImageResultState {
         ImageResultState()
 
     data class Failure(val reason: String) : ImageResultState()
+}
+
+internal class DecodeGeneration {
+    private var current = 0
+
+    @Synchronized
+    fun begin(): Int = ++current
+
+    @Synchronized
+    fun invalidate(block: () -> Unit = {}) {
+        current++
+        block()
+    }
+
+    @Synchronized
+    fun isCurrent(generation: Int): Boolean = generation == current
+
+    @Synchronized
+    fun commit(generation: Int, block: () -> Unit): Boolean {
+        if (generation != current) return false
+        block()
+        return true
+    }
 }
 
 class ComicPicImageState(
@@ -57,29 +82,43 @@ class ComicPicImageState(
 
     companion object {
         private val seedMap = listOf(2, 4, 6, 8, 10, 12, 14, 16, 18, 20)
+        private val cacheWriteMutex = Mutex()
     }
+
+    private val decodeGeneration = DecodeGeneration()
 
     var imageResultState by mutableStateOf<ImageResultState>(ImageResultState.Loading)
 
     suspend fun decode(context: Context, downscale: Boolean = false) {
+        val generation = decodeGeneration.begin()
+        updateImageResult(generation, ImageResultState.Loading)
         withContext(Dispatchers.Default) {
-            imageResultState = ImageResultState.Loading
             try {
-                decodeImage(context, downscale)
+                decodeImage(context, downscale, generation)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: OutOfMemoryError) {
                 logError("ComicPicImage", "解码图片 OOM: ${e.message}")
                 System.gc()
-                imageResultState = ImageResultState.Failure("内存不足，无法解码图片")
+                updateImageResult(
+                    generation,
+                    ImageResultState.Failure("内存不足，无法解码图片")
+                )
             } catch (e: Exception) {
                 logError("ComicPicImage", "解码图片异常: ${e.stackTraceToString()}")
-                imageResultState = ImageResultState.Failure("图片解码失败：${e.message ?: "未知错误"}")
+                updateImageResult(
+                    generation,
+                    ImageResultState.Failure("图片解码失败：${e.message ?: "未知错误"}")
+                )
             }
         }
     }
 
-    private suspend fun decodeImage(context: Context, downscale: Boolean = false) {
+    private suspend fun decodeImage(
+        context: Context,
+        downscale: Boolean = false,
+        generation: Int,
+    ) {
         val cacheDir = getCommonPicDecodeCacheDir(context, comicId)
         val page = extractPageFromUrl()
         val cacheFile = decodedFileOverride ?: File(cacheDir, "$page.webp")
@@ -99,7 +138,10 @@ class ComicPicImageState(
                         }
                 val decodeImageAspectRatio =
                     decodeImageBitmap.width * 1.0f / decodeImageBitmap.height
-                imageResultState = ImageResultState.Success(decodeImageBitmap, decodeImageAspectRatio)
+                updateImageResult(
+                    generation,
+                    ImageResultState.Success(decodeImageBitmap, decodeImageAspectRatio)
+                )
                 return
             } catch (e: Exception) {
                 logError("ComicPicImage", "缓存图片解码失败，删除并重新解码: ${e.message}")
@@ -133,17 +175,22 @@ class ComicPicImageState(
                         saveBitmapAsWebp(decodedBitmap, cacheFile)
                         decodedImageBitmap = decodedBitmap.asImageBitmap()
                     }
-                    imageResultState =
+                    updateImageResult(
+                        generation,
                         ImageResultState.Success(decodedImageBitmap, decodeImageAspectRatio)
+                    )
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: OutOfMemoryError) {
                     logError("ComicPicImage", "图片处理 OOM: ${e.message}")
                     System.gc()
-                    imageResultState = ImageResultState.Failure("内存不足")
+                    updateImageResult(generation, ImageResultState.Failure("内存不足"))
                 } catch (e: Exception) {
                     logError("ComicPicImage", "图片处理失败: ${e.stackTraceToString()}")
-                    imageResultState = ImageResultState.Failure("图片处理失败：${e.message ?: "未知错误"}")
+                    updateImageResult(
+                        generation,
+                        ImageResultState.Failure("图片处理失败：${e.message ?: "未知错误"}")
+                    )
                 }
             }
 
@@ -175,8 +222,10 @@ class ComicPicImageState(
                                 saveBitmapAsWebp(decodedBitmap, cacheFile)
                                 decodedImageBitmap = decodedBitmap.asImageBitmap()
                             }
-                            imageResultState =
+                            updateImageResult(
+                                generation,
                                 ImageResultState.Success(decodedImageBitmap, decodeImageAspectRatio)
+                            )
                             return
                         }
                     } catch (e: CancellationException) {
@@ -184,20 +233,28 @@ class ComicPicImageState(
                     } catch (e: OutOfMemoryError) {
                         logError("ComicPicImage", "内置API图片解码 OOM: ${e.message}")
                         System.gc()
-                        imageResultState = ImageResultState.Failure("内存不足")
+                        updateImageResult(generation, ImageResultState.Failure("内存不足"))
                         return
                     } catch (e: Exception) {
                         logError("ComicPicImage", "内置API图片解码失败: ${e.stackTraceToString()}")
                     }
                 }
                 logError("ComicPicImage", "图片加载失败: ${result.throwable.stackTraceToString()}")
-                imageResultState = ImageResultState.Failure("网络错误")
+                updateImageResult(generation, ImageResultState.Failure("网络错误"))
             }
         }
     }
 
     fun clearDecodedImage() {
-        imageResultState = ImageResultState.Loading
+        decodeGeneration.invalidate {
+            imageResultState = ImageResultState.Loading
+        }
+    }
+
+    private fun updateImageResult(generation: Int, result: ImageResultState) {
+        decodeGeneration.commit(generation) {
+            imageResultState = result
+        }
     }
 
     private fun decodeBitmap(originalBitmap: Bitmap, page: String): Bitmap {
@@ -262,9 +319,19 @@ class ComicPicImageState(
     }
 
     private suspend fun saveBitmapAsWebp(bitmap: Bitmap, file: File) {
-        withContext(Dispatchers.IO) {
-            FileOutputStream(file).use { out ->
-                check(bitmap.compressWebpCompat(50, out)) { "图片压缩失败" }
+        cacheWriteMutex.withLock {
+            withContext(Dispatchers.IO) {
+                file.parentFile?.mkdirs()
+                val tempFile = File(file.parentFile, ".${file.name}.part")
+                tempFile.delete()
+                try {
+                    FileOutputStream(tempFile).use { out ->
+                        check(bitmap.compressWebpCompat(50, out)) { "图片压缩失败" }
+                    }
+                    check(tempFile.renameTo(file)) { "无法完成图片缓存写入" }
+                } finally {
+                    tempFile.delete()
+                }
             }
         }
     }

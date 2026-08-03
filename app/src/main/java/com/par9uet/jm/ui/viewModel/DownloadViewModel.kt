@@ -121,7 +121,7 @@ class DownloadViewModel(
         val ids = _editState.value.selectedIds.toList()
         if (ids.isEmpty()) return
         viewModelScope.launch {
-            downloadComicDao.deleteByIds(ids)
+            downloadManager.deleteDownloads(ids)
             clearSelection()
         }
     }
@@ -133,7 +133,7 @@ class DownloadViewModel(
     fun deleteMany(ids: Set<Int>) {
         if (ids.isEmpty()) return
         viewModelScope.launch {
-            downloadComicDao.deleteByIds(ids.toList())
+            downloadManager.deleteDownloads(ids)
             _editState.update {
                 val selected = it.selectedIds - ids
                 it.copy(editing = selected.isNotEmpty(), selectedIds = selected)
@@ -142,7 +142,10 @@ class DownloadViewModel(
     }
 
     fun pauseSelected() {
-        updateSelectedStatus("paused")
+        val ids = _editState.value.selectedIds.toList()
+        if (ids.isEmpty()) return
+        clearSelection()
+        downloadManager.pauseDownloads(ids)
     }
 
     fun startSelected() {
@@ -150,15 +153,6 @@ class DownloadViewModel(
         if (ids.isEmpty()) return
         clearSelection()
         downloadManager.resumeDownloads(ids)
-    }
-
-    private fun updateSelectedStatus(status: String) {
-        val ids = _editState.value.selectedIds.toList()
-        if (ids.isEmpty()) return
-        viewModelScope.launch {
-            downloadComicDao.updateStatusByIds(ids, status)
-            clearSelection()
-        }
     }
 
     fun redownloadSelected() {

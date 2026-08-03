@@ -46,6 +46,31 @@ import kotlinx.coroutines.flow.filterNotNull
 import kotlinx.coroutines.launch
 import org.koin.androidx.compose.koinViewModel
 
+internal data class VisibleReaderItem(
+    val index: Int,
+    val offset: Int,
+    val size: Int,
+)
+
+internal fun mostVisibleReaderPage(
+    items: List<VisibleReaderItem>,
+    viewportStart: Int,
+    viewportEnd: Int,
+    pageCount: Int,
+): Int? {
+    return items
+        .asSequence()
+        .filter { it.index in 0 until pageCount && it.size > 0 }
+        .map { item ->
+            val visibleStart = maxOf(item.offset, viewportStart)
+            val visibleEnd = minOf(item.offset + item.size, viewportEnd)
+            item.index to (visibleEnd - visibleStart).coerceAtLeast(0)
+        }
+        .filter { (_, visibleSize) -> visibleSize > 0 }
+        .maxByOrNull { (_, visibleSize) -> visibleSize }
+        ?.first
+}
+
 @OptIn(FlowPreview::class, ExperimentalMaterial3Api::class)
 @Composable
 fun ComicScrollRead(
@@ -123,20 +148,29 @@ fun ComicScrollRead(
         }
         launch {
             snapshotFlow {
-                lazyListState.layoutInfo.visibleItemsInfo
-                    .firstOrNull { it.index < list.size }
-                    ?.index
+                val layoutInfo = lazyListState.layoutInfo
+                mostVisibleReaderPage(
+                    items = layoutInfo.visibleItemsInfo.map { item ->
+                        VisibleReaderItem(
+                            index = item.index,
+                            offset = item.offset,
+                            size = item.size,
+                        )
+                    },
+                    viewportStart = layoutInfo.viewportStartOffset,
+                    viewportEnd = layoutInfo.viewportEndOffset,
+                    pageCount = list.size,
+                )
             }
                 .filterNotNull()
                 .distinctUntilChanged()
                 .debounce(150)
                 .collect { visibleIndex ->
                     if (programmaticScroll) return@collect
-                    log("lazyListState.firstVisibleItemIndex currentIndexState = $currentIndexState it = $visibleIndex")
+                    log("most visible reader page current=$currentIndexState visible=$visibleIndex")
                     if (currentIndexState != visibleIndex) {
                         currentIndexState = visibleIndex
                         onUpdateSliderValue(visibleIndex.toFloat())
-                        comicReadViewModel.decodeIndex(currentIndexState, context)
                     }
                 }
         }

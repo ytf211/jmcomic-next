@@ -55,13 +55,19 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
 import okhttp3.Cookie
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import java.io.File
+import java.io.IOException
 import java.time.Duration
 import java.util.concurrent.TimeUnit
+import kotlin.coroutines.resume
 
 class ComicRepositoryImpl(
     private val service: ComicService,
@@ -605,25 +611,52 @@ class ComicRepositoryImpl(
     }
 
     override suspend fun downloadImageToFile(url: String, target: File): Boolean {
-        return withContext(Dispatchers.IO) {
-            val imageUrl = fixImageUrl(url)
-            try {
-                cleanHttpClient.newCall(buildImageRequest(imageUrl)).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        logError("ComicRepositoryImpl", "下载图片失败: HTTP ${response.code} URL=$imageUrl")
-                        return@withContext false
-                    }
-                    val body = response.body ?: return@withContext false
-                    val expectedBytes = body.contentLength()
-                    val copiedBytes = target.outputStream().use { output ->
-                        body.byteStream().use { input -> input.copyTo(output) }
-                    }
-                    copiedBytes > 0L && (expectedBytes < 0L || copiedBytes == expectedBytes)
+        val imageUrl = fixImageUrl(url)
+        val call = cleanHttpClient.newCall(buildImageRequest(imageUrl))
+        return suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (!continuation.isActive) return
+                    logError("ComicRepositoryImpl", "下载图片异常: ${e.message} URL=$imageUrl")
+                    continuation.resume(false)
                 }
-            } catch (e: Exception) {
-                logError("ComicRepositoryImpl", "下载图片异常: ${e.message} URL=$imageUrl")
-                false
-            }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val downloaded = try {
+                        response.use {
+                            if (!it.isSuccessful) {
+                                logError(
+                                    "ComicRepositoryImpl",
+                                    "下载图片失败: HTTP ${it.code} URL=$imageUrl"
+                                )
+                                false
+                            } else {
+                                val body = it.body
+                                if (body == null) {
+                                    false
+                                } else {
+                                    val expectedBytes = body.contentLength()
+                                    val copiedBytes = target.outputStream().use { output ->
+                                        body.byteStream().use { input -> input.copyTo(output) }
+                                    }
+                                    copiedBytes > 0L &&
+                                        (expectedBytes < 0L || copiedBytes == expectedBytes)
+                                }
+                            }
+                        }
+                    } catch (e: Exception) {
+                        if (!call.isCanceled()) {
+                            logError(
+                                "ComicRepositoryImpl",
+                                "下载图片异常: ${e.message} URL=$imageUrl"
+                            )
+                        }
+                        false
+                    }
+                    if (continuation.isActive) continuation.resume(downloaded)
+                }
+            })
         }
     }
 
@@ -631,21 +664,47 @@ class ComicRepositoryImpl(
         val images = synchronized(imageCache) { imageCache[comicId] }
         val image = images?.getOrNull(imageIndex) ?: return null
         val imageUrl = fixImageUrl(image.getDownloadUrl())
-        return withContext(Dispatchers.IO) {
-            try {
-                logError("ComicRepositoryImpl", "下载图片 comicId=$comicId index=$imageIndex URL=$imageUrl")
-                val request = buildImageRequest(imageUrl)
-                cleanHttpClient.newCall(request).execute().use { response ->
-                    if (!response.isSuccessful) {
-                        logError("ComicRepositoryImpl", "下载图片失败 comicId=$comicId index=$imageIndex: HTTP ${response.code} URL=$imageUrl")
-                        return@withContext null
-                    }
-                    response.body?.bytes()
+        val call = cleanHttpClient.newCall(buildImageRequest(imageUrl))
+        logError("ComicRepositoryImpl", "下载图片 comicId=$comicId index=$imageIndex URL=$imageUrl")
+        return suspendCancellableCoroutine { continuation ->
+            continuation.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (!continuation.isActive) return
+                    logError(
+                        "ComicRepositoryImpl",
+                        "下载图片异常 comicId=$comicId index=$imageIndex: ${e.message} URL=$imageUrl"
+                    )
+                    continuation.resume(null)
                 }
-            } catch (e: Exception) {
-                logError("ComicRepositoryImpl", "下载图片异常 comicId=$comicId index=$imageIndex: ${e.message} URL=$imageUrl")
-                null
-            }
+
+                override fun onResponse(call: Call, response: Response) {
+                    val bytes = try {
+                        response.use {
+                            if (!it.isSuccessful) {
+                                logError(
+                                    "ComicRepositoryImpl",
+                                    "下载图片失败 comicId=$comicId index=$imageIndex: " +
+                                        "HTTP ${it.code} URL=$imageUrl"
+                                )
+                                null
+                            } else {
+                                it.body?.bytes()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        if (!call.isCanceled()) {
+                            logError(
+                                "ComicRepositoryImpl",
+                                "下载图片异常 comicId=$comicId index=$imageIndex: " +
+                                    "${e.message} URL=$imageUrl"
+                            )
+                        }
+                        null
+                    }
+                    if (continuation.isActive) continuation.resume(bytes)
+                }
+            })
         }
     }
 

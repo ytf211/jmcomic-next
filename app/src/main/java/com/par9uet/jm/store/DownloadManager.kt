@@ -3,10 +3,13 @@ package com.par9uet.jm.store
 import android.content.Context
 import androidx.work.BackoffPolicy
 import androidx.work.Constraints
+import androidx.work.ExistingWorkPolicy
 import androidx.work.NetworkType
 import androidx.work.OneTimeWorkRequestBuilder
 import androidx.work.WorkManager
 import androidx.work.workDataOf
+import com.par9uet.jm.cache.getComicChapterDownloadDir
+import com.par9uet.jm.cache.getComicCoverDownloadFile
 import com.par9uet.jm.data.models.Comic
 import com.par9uet.jm.data.models.ComicChapter
 import com.par9uet.jm.database.dao.DownloadComicDao
@@ -14,11 +17,18 @@ import com.par9uet.jm.database.model.DownloadComic
 import com.par9uet.jm.worker.DownloadComicWorker
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import java.util.UUID
 import java.util.concurrent.TimeUnit
 
 private const val DOWNLOAD_RETRY_BACKOFF_SECONDS = 30L
+private const val DOWNLOAD_WORK_NAME_PREFIX = "comic-download-"
+private const val DOWNLOAD_WORK_MIGRATION_PREFS = "download_work_migration"
+private const val DOWNLOAD_WORK_MIGRATION_KEY = "unique_work_v1"
+
+internal fun downloadWorkName(comicId: Int): String = "$DOWNLOAD_WORK_NAME_PREFIX$comicId"
 
 class DownloadManager(
     private val context: Context,
@@ -26,6 +36,14 @@ class DownloadManager(
     private val scope: CoroutineScope,
     private val toastManager: ToastManager,
 ) {
+    private val workManager by lazy { WorkManager.getInstance(context) }
+    private val migrationPreferences by lazy {
+        context.getSharedPreferences(DOWNLOAD_WORK_MIGRATION_PREFS, Context.MODE_PRIVATE)
+    }
+    private val workMigration = scope.async(Dispatchers.IO) {
+        migrateLegacyDownloadWork()
+    }
+
     fun downloadComic(comic: Comic) {
         scope.launch(Dispatchers.IO) {
             if (downloadComicDao.getExistingIds(listOf(comic.id)).isNotEmpty()) {
@@ -137,18 +155,28 @@ class DownloadManager(
         )
     }
 
-    private fun enqueueDownload(comicId: Int) {
+    private suspend fun enqueueDownload(comicId: Int) {
         enqueueDownloads(listOf(comicId))
     }
 
-    private fun enqueueDownloads(comicIds: List<Int>) {
+    private suspend fun enqueueDownloads(
+        comicIds: List<Int>,
+        existingWorkPolicy: ExistingWorkPolicy = ExistingWorkPolicy.KEEP,
+    ) {
+        workMigration.await()
+        enqueueDownloadsInternal(comicIds, existingWorkPolicy)
+    }
+
+    private fun enqueueDownloadsInternal(
+        comicIds: List<Int>,
+        existingWorkPolicy: ExistingWorkPolicy,
+    ) {
         if (comicIds.isEmpty()) return
         val distinctComicIds = comicIds.distinct()
         val batchId = if (distinctComicIds.size > 1) UUID.randomUUID().toString() else ""
         val constraints = Constraints.Builder()
             .setRequiredNetworkType(NetworkType.CONNECTED)
             .build()
-        val workManager = WorkManager.getInstance(context)
         distinctComicIds.forEach { comicId ->
             val downloadRequest = OneTimeWorkRequestBuilder<DownloadComicWorker>()
                 .setConstraints(constraints)
@@ -164,9 +192,66 @@ class DownloadManager(
                     DOWNLOAD_RETRY_BACKOFF_SECONDS,
                     TimeUnit.SECONDS
                 )
+                .addTag(downloadWorkName(comicId))
                 .build()
-            workManager.enqueue(downloadRequest)
+            workManager.enqueueUniqueWork(
+                downloadWorkName(comicId),
+                existingWorkPolicy,
+                downloadRequest,
+            )
         }
+    }
+
+    private suspend fun cancelDownloadWork(comicIds: Collection<Int>) {
+        workMigration.await()
+        val operations = comicIds.distinct().map { comicId ->
+            workManager.cancelUniqueWork(downloadWorkName(comicId))
+        }
+        withContext(Dispatchers.IO) {
+            operations.forEach { operation -> operation.result.get() }
+        }
+    }
+
+    private suspend fun migrateLegacyDownloadWork() {
+        if (migrationPreferences.getBoolean(DOWNLOAD_WORK_MIGRATION_KEY, false)) return
+        withContext(Dispatchers.IO) {
+            workManager.cancelAllWork().result.get()
+        }
+        val resumable = downloadComicDao.getAll().filter {
+            it.status == "pending" || it.status == "downloading"
+        }
+        if (resumable.isNotEmpty()) {
+            downloadComicDao.updateStatusByIds(resumable.map { it.id }, "pending")
+        }
+        enqueueDownloadsInternal(resumable.map { it.id }, ExistingWorkPolicy.REPLACE)
+        migrationPreferences.edit()
+            .putBoolean(DOWNLOAD_WORK_MIGRATION_KEY, true)
+            .apply()
+    }
+
+    fun pauseDownloads(comicIds: List<Int>) {
+        if (comicIds.isEmpty()) return
+        scope.launch(Dispatchers.IO) {
+            val ids = comicIds.distinct()
+            cancelDownloadWork(ids)
+            ids.sorted().forEach { comicId ->
+                DownloadWorkCoordinator.withChapterLock(comicId) {
+                    downloadComicDao.updateStatus(
+                        com.par9uet.jm.database.model.UpdateComicStatus(comicId, "paused")
+                    )
+                }
+            }
+        }
+    }
+
+    suspend fun deleteDownloads(comicIds: Collection<Int>) {
+        val ids = comicIds.distinct()
+        if (ids.isEmpty()) return
+        cancelDownloadWork(ids)
+        ids.sorted().forEach { comicId ->
+            DownloadWorkCoordinator.withChapterLock(comicId) { Unit }
+        }
+        downloadComicDao.deleteByIds(ids)
     }
 
     fun retryDownload(comicId: Int) {
@@ -224,27 +309,33 @@ class DownloadManager(
         scope.launch(Dispatchers.IO) {
             val items = downloadComicDao.getByGroupId(groupId)
             if (items.isEmpty()) return@launch
-            items.forEach { item ->
-                runCatching {
-                    val zipFile = java.io.File(item.zipPath)
-                    if (zipFile.exists()) {
-                        if (zipFile.isDirectory) {
-                            zipFile.deleteRecursively()
-                        } else {
-                            zipFile.delete()
+            val itemIds = items.map { it.id }
+            cancelDownloadWork(itemIds)
+            items.sortedBy { it.id }.forEach { item ->
+                DownloadWorkCoordinator.withChapterLock(item.id) {
+                    val chapterDir = getComicChapterDownloadDir(context, item)
+                    if (chapterDir.exists()) chapterDir.deleteRecursively()
+                    runCatching {
+                        val legacyPath = java.io.File(item.zipPath)
+                        if (legacyPath.exists() && legacyPath != chapterDir) {
+                            if (legacyPath.isDirectory) {
+                                legacyPath.deleteRecursively()
+                            } else {
+                                legacyPath.delete()
+                            }
                         }
                     }
+                    val coverFile = getComicCoverDownloadFile(context, item)
+                    if (coverFile.exists()) coverFile.delete()
+                    downloadComicDao.updateStatus(
+                        com.par9uet.jm.database.model.UpdateComicStatus(item.id, "pending")
+                    )
+                    downloadComicDao.updateProgress(
+                        com.par9uet.jm.database.model.UpdateComicProgress(item.id, 0f)
+                    )
                 }
-                val coverFile = java.io.File(item.coverPath)
-                if (coverFile.exists()) coverFile.delete()
-                downloadComicDao.updateStatus(
-                    com.par9uet.jm.database.model.UpdateComicStatus(item.id, "pending")
-                )
-                downloadComicDao.updateProgress(
-                    com.par9uet.jm.database.model.UpdateComicProgress(item.id, 0f)
-                )
             }
-            enqueueDownloads(items.map { it.id })
+            enqueueDownloads(itemIds, ExistingWorkPolicy.REPLACE)
             toastManager.showAsync("已重新下载 ${items.size} 个任务")
         }
     }

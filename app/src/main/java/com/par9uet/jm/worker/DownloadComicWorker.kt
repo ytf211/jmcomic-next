@@ -25,6 +25,7 @@ import com.par9uet.jm.repository.ComicRepository
 import com.par9uet.jm.retrofit.model.ComicPicListResponse
 import com.par9uet.jm.retrofit.model.NetWorkResult
 import com.par9uet.jm.store.DownloadToastAggregator
+import com.par9uet.jm.store.DownloadWorkCoordinator
 import com.par9uet.jm.store.LocalSettingManager
 import com.par9uet.jm.store.RemoteSettingManager
 import com.par9uet.jm.utils.COMIC_CACHE_NOTIFICATION_ID_BASE
@@ -72,8 +73,14 @@ class DownloadComicWorker(
     private val downloadToastAggregator: DownloadToastAggregator,
 ) : CoroutineWorker(appContext, params) {
 
-    override suspend fun doWork(): Result = downloadConcurrencyGate.withPermit {
-        performDownload()
+    override suspend fun doWork(): Result {
+        val comicId = inputData.getInt("comicId", -1)
+        if (comicId == -1) return Result.failure()
+        return downloadConcurrencyGate.withPermit {
+            DownloadWorkCoordinator.withChapterLock(comicId) {
+                performDownload()
+            }
+        }
     }
 
     private suspend fun performDownload(): Result {
@@ -91,6 +98,9 @@ class DownloadComicWorker(
         var trackingStarted = false
         return try {
             val downloadTask = downloadComicDao.getById(comicId) ?: return Result.failure()
+            if (downloadTask.status != "pending" && downloadTask.status != "downloading") {
+                return Result.success()
+            }
             downloadComicDao.updateStatus(UpdateComicStatus(comicId, "downloading"))
             DownloadSpeedTracker.startTracking(coverOwnerId)
             trackingStarted = true
@@ -138,7 +148,7 @@ class DownloadComicWorker(
             if (isValidImageFile(file)) return@withLock file.absolutePath
             file.delete()
 
-            val tempFile = File(file.parentFile, "${file.name}.part")
+            val tempFile = File(file.parentFile, "${file.name}.${id}.part")
             tempFile.delete()
             try {
                 val coverUrl =
@@ -152,7 +162,10 @@ class DownloadComicWorker(
                     .build()
 
                 when (val result = loader.execute(request)) {
-                    is ErrorResult -> ""
+                    is ErrorResult -> throw IllegalStateException(
+                        "封面下载失败：${result.throwable.message ?: "未知错误"}",
+                        result.throwable,
+                    )
                     is SuccessResult -> {
                         val bitmap = result.drawable.toBitmap()
                         FileOutputStream(tempFile).use { out ->
@@ -236,7 +249,7 @@ class DownloadComicWorker(
         speed: String,
         loader: ImageLoader,
     ) {
-        val tempFile = File(file.parentFile, ".${file.name}.part")
+        val tempFile = File(file.parentFile, ".${file.name}.${id}.part")
         tempFile.delete()
         try {
             withTimeout(DOWNLOAD_PAGE_TIMEOUT_MS) {

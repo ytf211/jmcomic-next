@@ -43,6 +43,27 @@ import java.util.zip.ZipInputStream
 import kotlin.math.max
 import kotlin.math.min
 
+internal fun readerDecodeKeepRange(
+    index: Int,
+    pageCount: Int,
+    prefetchCount: Int,
+    visibleRange: IntRange? = null,
+): IntRange {
+    if (pageCount <= 0) return IntRange.EMPTY
+    val safeIndex = index.coerceIn(0, pageCount - 1)
+    val safePrefetch = prefetchCount.coerceAtLeast(0)
+    val candidateVisibleStart = visibleRange?.first?.coerceIn(0, pageCount - 1)
+    val candidateVisibleEnd = candidateVisibleStart?.let { start ->
+        visibleRange.last.coerceIn(start, pageCount - 1)
+    }
+    val useVisibleRange = candidateVisibleStart != null && candidateVisibleEnd != null &&
+        safeIndex in (candidateVisibleStart - 1)..(candidateVisibleEnd + 1)
+    val visibleStart = candidateVisibleStart?.takeIf { useVisibleRange } ?: safeIndex
+    val visibleEnd = candidateVisibleEnd?.takeIf { useVisibleRange } ?: safeIndex
+    return max(0, min(safeIndex, visibleStart) - safePrefetch)..
+        min(pageCount - 1, max(safeIndex, visibleEnd) + safePrefetch)
+}
+
 class ComicReadViewModel(
     private val comicRepository: ComicRepository,
     private val picImageLoader: ImageLoader,
@@ -78,6 +99,8 @@ class ComicReadViewModel(
 
     private val prefetchSet = mutableSetOf<Int>()
     private val decodeJobs = mutableMapOf<Int, Job>()
+    private var visibleDecodeRange: IntRange? = null
+    private var decodeWindowGeneration = 0
     // 内存优化模式下的并发解码信号量，按需创建
     private var decodeSemaphore: Semaphore? = null
     private var decodeSemaphorePermits: Int = 0
@@ -101,6 +124,8 @@ class ComicReadViewModel(
         _comicPicState.value.data?.forEach { it.clearDecodedImage() }
         _continuousReaderState.value = ContinuousReaderState()
         prefetchSet.clear()
+        visibleDecodeRange = null
+        decodeWindowGeneration++
     }
 
     fun cancelContinuousAppend() {
@@ -497,15 +522,16 @@ class ComicReadViewModel(
         if (size <= 0 || index !in 0 until size) return
         log("decode index $index")
         val count = localSettingManager.localSettingState.value.prefetchCount
-        val start = max(0, index - count)
-        val end = min(size - 1, index + count)
-        trimDecodedImages(start, end)
-        decode(index, context) {
-            for (i in index + 1..end) {
+        val keepRange = readerDecodeKeepRange(index, size, count, visibleDecodeRange)
+        val windowGeneration = ++decodeWindowGeneration
+        trimDecodedImages(keepRange.first, keepRange.last)
+        decode(index, context) decodeComplete@{
+            if (windowGeneration != decodeWindowGeneration) return@decodeComplete
+            for (i in index + 1..keepRange.last) {
                 log("pre decode index $i")
                 decode(i, context)
             }
-            for (i in index - 1 downTo start) {
+            for (i in index - 1 downTo keepRange.first) {
                 log("pre decode index $i")
                 decode(i, context)
             }
@@ -514,11 +540,14 @@ class ComicReadViewModel(
 
     fun decodeVisibleRange(firstIndex: Int, lastIndex: Int, context: Context) {
         if (size <= 0) return
+        val visibleStart = min(firstIndex, lastIndex).coerceIn(0, size - 1)
+        val visibleEnd = max(firstIndex, lastIndex).coerceIn(visibleStart, size - 1)
+        visibleDecodeRange = visibleStart..visibleEnd
+        decodeWindowGeneration++
         val count = localSettingManager.localSettingState.value.prefetchCount
-        val start = max(0, min(firstIndex, lastIndex) - count)
-        val end = min(size - 1, max(firstIndex, lastIndex) + count)
-        trimDecodedImages(start, end)
-        for (i in start..end) {
+        val keepRange = readerDecodeKeepRange(visibleStart, size, count, visibleDecodeRange)
+        trimDecodedImages(keepRange.first, keepRange.last)
+        for (i in keepRange) {
             decode(i, context)
         }
     }
